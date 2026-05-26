@@ -10,3 +10,4 @@ statsmodels
 scipy
 openpyxl
 plotly
+streamlit-image-coordinates
