@@ -147,7 +147,7 @@ def load_data():
     """데이터 로드 + 전처리 + 병합"""
     data_dir = os.path.join(os.path.dirname(__file__), "data")
 
-    df = pd.read_csv(os.path.join(data_dir, "이용객.csv"), encoding="euc-kr")
+    df = pd.read_csv(os.path.join(data_dir, "이용객.csv"), encoding="cp949")
     df["현황 일시"] = pd.to_datetime(df["현황 일시"])
     df["연월"] = df["현황 일시"].dt.to_period("M")
 
