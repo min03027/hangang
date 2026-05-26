@@ -21,6 +21,7 @@ from scipy import stats
 from scipy.stats import probplot
 import statsmodels.api as sm
 from statsmodels.stats.outliers_influence import variance_inflation_factor
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.linear_model import Ridge, ElasticNet, LinearRegression
