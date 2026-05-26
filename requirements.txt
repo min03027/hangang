@@ -10,4 +10,5 @@ statsmodels
 scipy
 openpyxl
 plotly
-streamlit-image-coordinates
+streamlit-folium
+folium
