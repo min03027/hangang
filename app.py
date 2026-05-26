@@ -179,7 +179,7 @@ def load_data():
     monthly = df.groupby("연월")[all_num + ["총이용객"]].sum().reset_index()
     monthly["연월"] = monthly["연월"].dt.to_timestamp()
 
-    trend = pd.read_excel(os.path.join(data_dir, "트렌드.xlsx"))
+    trend = pd.read_excel(os.path.join(data_dir, "trend.xlsx"))
     trend.rename(columns={"날짜": "연월"}, inplace=True)
     trend["연월"] = pd.to_datetime(trend["연월"])
 
