@@ -208,6 +208,9 @@ def load_data():
 
     return merged, num_cols, all_num, park_list
 
+st.write("현재 위치:", os.getcwd())
+st.write("data_dir 존재?", os.path.exists(data_dir))
+st.write("csv 존재?", os.path.exists(os.path.join(data_dir, "이용객.csv")))
 
 merged, num_cols, all_num, park_list = load_data()
 
