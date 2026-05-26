@@ -270,33 +270,63 @@ def get_models():
     }
 
 
-# ─────────────────────────────────────────────
-# 사이드바
-# ─────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## 🏞️ 분석 설정")
-    selected_park = st.selectbox("공원 선택", park_list, index=9)
 
-    st.markdown("---")
-    page = st.radio(
-        "분석 메뉴",
-        [
-            "📊 EDA (탐색적 분석)",
-            "🔬 t-test & VIF",
-            "🤖 모델 학습 & 비교",
-            "📈 잔차 도표 & 진단",
-            "💡 SHAP 해석",
-            "🎯 Conformal Prediction",
-            "🧠 LSTM (딥러닝)",
-        ],
-    )
 
-    st.markdown("---")
-    st.markdown(
-        f"**데이터 기간**  \n{merged['연월'].min().strftime('%Y-%m')} ~ "
-        f"{merged['연월'].max().strftime('%Y-%m')}"
-    )
-    st.markdown(f"**관측치**: {len(merged)}개월")
+# =========================================================
+# 한강공원 지도 선택
+# =========================================================
+
+st.markdown("## 🗺️ 한강공원 선택")
+
+value = streamlit_image_coordinates(
+    "assets/hangang_map.png",
+    width=900
+)
+
+# 기본값
+selected_park = "여의도한강공원"
+
+# 클릭 좌표 받아오기
+if value is not None:
+
+    x = value["x"]
+    y = value["y"]
+
+    # 공원 좌표 매핑
+    if x < 120 and y > 180:
+        selected_park = "강서한강공원"
+
+    elif x < 180 and y > 240:
+        selected_park = "양화한강공원"
+
+    elif x < 260 and y < 120:
+        selected_park = "난지한강공원"
+
+    elif x < 320 and y < 180:
+        selected_park = "망원한강공원"
+
+    elif x < 330 and y > 220:
+        selected_park = "여의도한강공원"
+
+    elif x < 520 and y > 250:
+        selected_park = "이촌한강공원"
+
+    elif x < 700 and y > 320:
+        selected_park = "반포한강공원"
+
+    elif x < 760 and y > 280:
+        selected_park = "잠원한강공원"
+
+    elif x < 850 and y > 300:
+        selected_park = "잠실한강공원"
+
+    elif x < 760 and y < 220:
+        selected_park = "뚝섬한강공원"
+
+    elif x > 820 and y < 180:
+        selected_park = "광나루한강공원"
+
+st.success(f"선택된 공원: {selected_park}")
 
 # ─────────────────────────────────────────────
 # 헤더
