@@ -147,7 +147,7 @@ def load_data():
     """데이터 로드 + 전처리 + 병합"""
     data_dir = os.path.join(os.path.dirname(__file__), "data")
 
-    df = pd.read_csv(os.path.join(data_dir, "이용객.csv"), encoding="cp949")
+    df = pd.read_csv(os.path.join(data_dir, "users.csv"), encoding="cp949")
     df["현황 일시"] = pd.to_datetime(df["현황 일시"])
     df["연월"] = df["현황 일시"].dt.to_period("M")
 
@@ -207,10 +207,6 @@ def load_data():
     ]
 
     return merged, num_cols, all_num, park_list
-
-st.write("현재 위치:", os.getcwd())
-st.write("data_dir 존재?", os.path.exists(data_dir))
-st.write("csv 존재?", os.path.exists(os.path.join(data_dir, "이용객.csv")))
 
 merged, num_cols, all_num, park_list = load_data()
 
