@@ -93,16 +93,47 @@ st.markdown("""
 # ══════════════════════════════════════════════
 @st.cache_resource
 def load_pkl_model():
-    """model/ 폴더의 첫 번째 pkl을 로드. 이미 fitted된 모델이므로 predict만 사용."""
-    model_dir = os.path.join(os.path.dirname(__file__), "model")
-    pkl_files = glob.glob(os.path.join(model_dir, "*.pkl"))
+
+    model_dir = os.path.join(
+        os.path.dirname(__file__),
+        "model"
+    )
+
+    pkl_files = glob.glob(
+        os.path.join(model_dir, "*.pkl")
+    )
+
     if not pkl_files:
-        return None, None
+        return None, None, None, None
+
     with open(pkl_files[0], "rb") as f:
         obj = pickle.load(f)
-    return obj, os.path.basename(pkl_files[0])
 
-pkl_model, pkl_name = load_pkl_model()
+    # dict 형태 저장된 경우
+    if isinstance(obj, dict):
+
+        model = obj.get("model", None)
+        scaler = obj.get("scaler", None)
+        features = obj.get("features", None)
+
+        return (
+            model,
+            scaler,
+            features,
+            os.path.basename(pkl_files[0])
+        )
+
+    # 모델 단독 저장된 경우
+    else:
+
+        return (
+            obj,
+            None,
+            None,
+            os.path.basename(pkl_files[0])
+        )
+
+pkl_model, pkl_scaler, pkl_features, pkl_name = load_pkl_model()
 
 
 def get_pkl_feature_info(model):
@@ -432,13 +463,41 @@ elif page == "🤖 모델 예측 (pkl)":
     Xo_te_sc = sc_o.transform(Xo_te)
     X_full_sc = sc_o.fit_transform(X_use)   # 전체 예측용
 
+
     # ── predict only (fit 호출 없음)
-    try:
-        pred_pkl    = pkl_model.predict(Xo_te_sc)
-        pred_full   = pkl_model.predict(X_full_sc)
-    except Exception as e:
-        st.error(f"예측 오류: {e}\n\n피처 수 또는 스케일 문제일 수 있습니다. pkl 학습 당시와 동일한 전처리가 필요합니다.")
-        st.stop()
+try:
+
+    # 저장된 feature 사용
+    if pkl_features is not None:
+        X_use = X_all[pkl_features]
+    else:
+        X_use = X_all
+
+    # 저장된 scaler 사용
+    if pkl_scaler is not None:
+        X_scaled = pkl_scaler.transform(X_use)
+    else:
+        X_scaled = X_use
+
+    # 전체 예측
+    pred_full = pkl_model.predict(X_scaled)
+
+    # 테스트셋 분리
+    _, X_test, _, yo_te = train_test_split(
+        X_scaled,
+        y,
+        test_size=0.2,
+        random_state=42
+    )
+
+    # 테스트셋 예측
+    pred_pkl = pkl_model.predict(X_test)
+
+except Exception as e:
+
+    st.error(f"예측 오류: {e}")
+
+    st.stop()
 
     rmse = np.sqrt(mean_squared_error(yo_te, pred_pkl))
     mae  = mean_absolute_error(yo_te, pred_pkl)
