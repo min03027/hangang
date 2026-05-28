@@ -465,39 +465,39 @@ elif page == "🤖 모델 예측 (pkl)":
 
 
         # ── predict only (fit 호출 없음)
-try:
+    try:
 
-    # 저장된 feature 사용
-    if pkl_features is not None:
-        X_use = X_all[pkl_features]
-    else:
-        X_use = X_all
+        # 저장된 feature 사용
+        if pkl_features is not None:
+            X_use = X_all[pkl_features]
+        else:
+            X_use = X_all
 
     # 저장된 scaler 사용
-    if pkl_scaler is not None:
-        X_scaled = pkl_scaler.transform(X_use)
-    else:
-        X_scaled = X_use
+        if pkl_scaler is not None:
+            X_scaled = pkl_scaler.transform(X_use)
+        else:
+            X_scaled = X_use
 
     # 전체 예측
-    pred_full = pkl_model.predict(X_scaled)
+        pred_full = pkl_model.predict(X_scaled)
 
-    # 테스트셋 분리
-    _, X_test, _, yo_te = train_test_split(
-        X_scaled,
-        y,
-        test_size=0.2,
-        random_state=42
-    )
+        # 테스트셋 분리
+        _, X_test, _, yo_te = train_test_split(
+            X_scaled,
+            y,
+            test_size=0.2,
+            random_state=42
+        )
 
     # 테스트셋 예측
-    pred_pkl = pkl_model.predict(X_test)
+        pred_pkl = pkl_model.predict(X_test)
 
-except Exception as e:
+    except Exception as e:
 
-    st.error(f"예측 오류: {e}")
+        st.error(f"예측 오류: {e}")
 
-    st.stop()
+        st.stop()
 
     rmse = np.sqrt(mean_squared_error(yo_te, pred_pkl))
     mae  = mean_absolute_error(yo_te, pred_pkl)
