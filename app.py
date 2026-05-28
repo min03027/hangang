@@ -294,7 +294,7 @@ st.markdown(f"""
 
 leakage     = ["일반이용자(아침)","일반이용자(낮)","일반이용자(저녁)"]
 feature_cols = [c for c in num_cols if c not in leakage]
-
+feature_cols.append("검색량")
 
 # ══════════════════════════════════════════════
 # 📊 EDA
