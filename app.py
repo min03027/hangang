@@ -464,7 +464,7 @@ elif page == "🤖 모델 예측 (pkl)":
     X_full_sc = sc_o.fit_transform(X_use)   # 전체 예측용
 
 
-    # ── predict only (fit 호출 없음)
+        # ── predict only (fit 호출 없음)
 try:
 
     # 저장된 feature 사용
