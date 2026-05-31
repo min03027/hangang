@@ -247,23 +247,119 @@ def bootstrap_ci(y_true, y_pred, metric_fn, n_bootstrap=1000, ci=95):
 # 지도
 # ══════════════════════════════════════════════
 st.markdown("## 🗺️ 한강공원 선택")
+ 
 parks = {
-    "강서한강공원":[37.588,126.815],"양화한강공원":[37.543,126.901],
-    "난지한강공원":[37.568,126.876],"망원한강공원":[37.555,126.897],
-    "여의도한강공원":[37.528,126.932],"이촌한강공원":[37.517,126.973],
-    "반포한강공원":[37.510,126.995],"잠원한강공원":[37.519,127.011],
-    "잠실한강공원":[37.520,127.086],"뚝섬한강공원":[37.529,127.072],
-    "광나루한강공원":[37.548,127.118],
+    "강서한강공원":   [37.588, 126.815],
+    "양화한강공원":   [37.543, 126.901],
+    "난지한강공원":   [37.568, 126.876],
+    "망원한강공원":   [37.555, 126.897],
+    "여의도한강공원": [37.528, 126.932],
+    "이촌한강공원":   [37.517, 126.973],
+    "반포한강공원":   [37.510, 126.995],
+    "잠원한강공원":   [37.519, 127.011],
+    "잠실한강공원":   [37.520, 127.086],
+    "뚝섬한강공원":   [37.529, 127.072],
+    "광나루한강공원": [37.548, 127.118],
 }
-m_map = folium.Map(location=[37.53,126.98], zoom_start=11, tiles="CartoDB positron")
+ 
+m_map = folium.Map(
+    location=[37.53, 126.98],
+    zoom_start=12,
+    tiles="CartoDB positron",
+)
+ 
+# 한강 라인 강조
+folium.PolyLine(
+    locations=[
+        [37.590, 126.810], [37.575, 126.840], [37.568, 126.876],
+        [37.555, 126.897], [37.543, 126.901], [37.528, 126.932],
+        [37.517, 126.973], [37.510, 126.995], [37.519, 127.011],
+        [37.520, 127.040], [37.529, 127.072], [37.520, 127.086],
+        [37.548, 127.118],
+    ],
+    color="#4FC3F7",
+    weight=6,
+    opacity=0.6,
+    tooltip="한강"
+).add_to(m_map)
+ 
+# 공원별 커스텀 마커
 for park, coord in parks.items():
-    folium.Marker(location=coord, tooltip=park, popup=park,
-                  icon=folium.Icon(color="blue", icon="tree-deciduous")).add_to(m_map)
-map_data = st_folium(m_map, width=1000, height=500)
+ 
+    # 선택된 공원은 빨간색, 나머지는 초록색
+    is_selected = (park == selected_park) if 'selected_park' in dir() else False
+    color       = "#E8505B" if is_selected else "#2E86AB"
+    border      = "#fff"
+    size        = 16 if is_selected else 12
+ 
+    icon_html = f"""
+        <div style="
+            background-color: {color};
+            border: 3px solid {border};
+            border-radius: 50%;
+            width: {size}px;
+            height: {size}px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+        "></div>
+    """
+ 
+    popup_html = f"""
+        <div style="
+            font-family: 'Noto Sans KR', sans-serif;
+            font-size: 13px;
+            font-weight: 700;
+            color: #1A1A2E;
+            padding: 6px 10px;
+            white-space: nowrap;
+        ">
+            🌿 {park}
+        </div>
+    """
+ 
+    folium.Marker(
+        location=coord,
+        popup=folium.Popup(park, max_width=200),
+        tooltip=folium.Tooltip(
+            f"<b style='font-size:13px'>{park}</b><br>"
+            f"<span style='color:#888;font-size:11px'>클릭하여 선택</span>",
+            sticky=True,
+        ),
+        icon=folium.DivIcon(
+            html=icon_html,
+            icon_size=(size, size),
+            icon_anchor=(size//2, size//2),
+        ),
+    ).add_to(m_map)
+ 
+    # 공원 이름 라벨
+    folium.Marker(
+        location=[coord[0] + 0.003, coord[1]],
+        icon=folium.DivIcon(
+            html=f"""
+                <div style="
+                    font-family: 'Noto Sans KR', sans-serif;
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: #1A1A2E;
+                    background: rgba(255,255,255,0.85);
+                    padding: 2px 5px;
+                    border-radius: 4px;
+                    white-space: nowrap;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+                ">{park.replace("한강공원","")}</div>
+            """,
+            icon_size=(100, 20),
+            icon_anchor=(50, 10),
+        ),
+    ).add_to(m_map)
+ 
+map_data = st_folium(m_map, width=1100, height=520)
+ 
 selected_park = "여의도한강공원"
 if map_data["last_object_clicked_popup"]:
     selected_park = map_data["last_object_clicked_popup"]
-st.success(f"선택된 공원: {selected_park}")
+ 
+st.success(f"✅ 선택된 공원: **{selected_park}**")
 
 # pkl 상태
 if pkl_model is not None:
