@@ -776,9 +776,15 @@ elif page == "🤖 모델 예측 (pkl)":
     r2   = r2_score(yo_te, pred_pkl)
 
     k1,k2,k3 = st.columns(3)
-    k1.metric("RMSE", f"{rmse:,.0f}")
-    k2.metric("MAE",  f"{mae:,.0f}")
-    k3.metric("R²",   f"{r2:.4f}")
+    mape_rmse = rmse / merged["총이용객"].mean() * 100
+    mape_mae  = mae  / merged["총이용객"].mean() * 100
+
+    k1.metric("RMSE",  f"{rmse:,.0f}",
+          f"평균 대비 {mape_rmse:.1f}% 오차",delta_color="off")
+    k2.metric("MAE",   f"{mae:,.0f}",
+          f"평균 대비 {mape_mae:.1f}% 오차",delta_color="off")
+    k3.metric("R²",    f"{r2:.3f}",
+          f"이용객 변동의 {r2*100:.1f}% 설명",delta_color="off")
 
     st.markdown('<h3 class="section-header">실제 vs 예측 (테스트셋)</h3>', unsafe_allow_html=True)
     idx = np.arange(len(yo_te))
