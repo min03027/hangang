@@ -435,7 +435,8 @@ elif page == "🤖 모델 예측 (pkl)":
     X_all = preprocess(merged[feature_cols].copy())
     y     = merged["총이용객"]
 
-    feat_info = get_pkl_feature_info(pkl_model)
+    if pkl_features is not None:  # load_pkl_model()이 이미 obj["features"] 로드함
+    X_use = preprocess(merged[pkl_features].copy())
 
     if isinstance(feat_info, list):
         # pkl이 feature_names_in_을 갖고 있으면 해당 피처만 사용
