@@ -438,25 +438,6 @@ elif page == "🤖 모델 예측 (pkl)":
     if pkl_features is not None:  # load_pkl_model()이 이미 obj["features"] 로드함
         X_use = preprocess(merged[pkl_features].copy())
 
-    if isinstance(feat_info, list):
-        # pkl이 feature_names_in_을 갖고 있으면 해당 피처만 사용
-        missing = [f for f in feat_info if f not in X_all.columns]
-        if missing:
-            st.error(f"데이터에 없는 피처: {missing}")
-            st.stop()
-        X_use = X_all[feat_info]
-        st.success(f"pkl 학습 피처 {len(feat_info)}개를 데이터에서 자동 매칭했습니다.")
-    elif isinstance(feat_info, int):
-        # 피처 수만 알 때 → 앞에서부터 해당 수만큼 사용
-        if feat_info > len(X_all.columns):
-            st.error(f"pkl 모델이 요구하는 피처 수({feat_info})가 데이터 피처 수({len(X_all.columns)})보다 많습니다.")
-            st.stop()
-        X_use = X_all.iloc[:, :feat_info]
-        st.warning(f"피처 이름을 알 수 없어 앞 {feat_info}개 컬럼을 사용합니다. 순서가 학습 시와 동일해야 합니다.")
-    else:
-        X_use = X_all
-        st.warning("피처 정보를 pkl에서 읽을 수 없어 모든 피처를 사용합니다.")
-
     # ── 스케일링 (별도 scaler가 없으므로 StandardScaler 적용)
     Xo_tr, Xo_te, yo_tr, yo_te = train_test_split(X_use, y, test_size=0.2, random_state=42)
     sc_o = StandardScaler()
