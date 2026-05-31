@@ -779,7 +779,7 @@ elif page == "🤖 모델 예측 (pkl)":
     mape_rmse = rmse / merged["총이용객"].mean() * 100
     mape_mae  = mae  / merged["총이용객"].mean() * 100
 
-    k1.metric("RMSE",  f{rmse/10000:.1f}만 명",
+    k1.metric("RMSE",  f"{rmse/10000:.1f}만 명",
           f"평균 대비 {rmse/mean_visitors*100:.1f}% 오차",delta_color="off")
     k2.metric("MAE",   f"{mae/10000:.1f}만 명",
           f"평균 대비 {mae/mean_visitors*100:.1f}% 오차",delta_color="off")
