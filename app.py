@@ -393,65 +393,259 @@ feature_cols = [c for c in num_cols if c not in leakage]
 feature_cols.append("검색량")
 
 # ══════════════════════════════════════════════
-# 📊 EDA
+# 📊 EDA — 전체 평균 vs 선택 공원 비교
 # ══════════════════════════════════════════════
 if page == "📊 EDA (탐색적 분석)":
-    park_mean_search = merged[selected_park].mean()
-    park_total       = merged["총이용객"].sum()
-    park_corr        = merged[selected_park].corr(merged["총이용객"])
 
-    c1,c2,c3,c4 = st.columns(4)
-    for col,label,val in [
-        (c1,"총 이용객 (전체 기간)",f"{park_total:,.0f}"),
-        (c2,"평균 월 이용객",f"{merged['총이용객'].mean():,.0f}"),
-        (c3,f"{selected_park} 평균 검색량",f"{park_mean_search:.1f}"),
-        (c4,"검색량↔이용객 상관",f"{park_corr:.3f}"),
-    ]:
-        with col:
-            st.markdown(f'<div class="metric-card"><h3>{label}</h3>'
-                        f'<div class="value">{val}</div></div>', unsafe_allow_html=True)
+    # ── 공원별 월별 집계 (df 원본 사용)
+    @st.cache_data
+    def get_park_monthly(df_raw):
+        df_raw = df_raw.copy()
+        df_raw["총이용자"] = (
+            df_raw["일반이용자(아침)"] +
+            df_raw["일반이용자(낮)"] +
+            df_raw["일반이용자(저녁)"]
+        )
+        df_raw["연월"] = pd.to_datetime(df_raw["현황 일시"]).dt.to_period("M").dt.to_timestamp()
+        df_raw["월"]   = pd.to_datetime(df_raw["현황 일시"]).dt.month
+
+        def get_season(m):
+            if m in [3,4,5]:   return "봄"
+            elif m in [6,7,8]: return "여름"
+            elif m in [9,10,11]: return "가을"
+            return "겨울"
+        df_raw["계절"] = df_raw["월"].apply(get_season)
+        return df_raw
+
+    # df 로드 (load_data에서 원본 df가 없으므로 다시 로드)
+    @st.cache_data
+    def load_raw_df():
+        data_dir = os.path.join(os.path.dirname(__file__), "data")
+        df_raw = pd.read_csv(os.path.join(data_dir, "users.csv"), encoding="utf-8")
+        df_raw["현황 일시"] = pd.to_datetime(df_raw["현황 일시"])
+        for c in ["일반이용자(아침)", "일반이용자(낮)", "일반이용자(저녁)"]:
+            if c in df_raw.columns:
+                df_raw[c] = pd.to_numeric(df_raw[c], errors="coerce").fillna(0)
+        return df_raw
+
+    df_raw    = load_raw_df()
+    df_park   = get_park_monthly(df_raw)
+
+    # 선택 공원 / 전체 데이터 분리
+    park_df   = df_park[df_park["공원명"] == selected_park] if "공원명" in df_park.columns else pd.DataFrame()
+    all_monthly = df_park.groupby("연월")["총이용자"].mean().reset_index()
+    all_monthly.columns = ["연월", "전체평균"]
+
+    has_park = len(park_df) > 0
+
+    # ── KPI 카드 ────────────────────────────────────────────────
+    st.markdown("#### 📌 주요 지표 비교")
+    k1, k2, k3, k4 = st.columns(4)
+
+    total_mean = df_park["총이용자"].mean()
+    park_mean  = park_df["총이용자"].mean() if has_park else 0
+    diff_pct   = ((park_mean - total_mean) / total_mean * 100) if total_mean > 0 else 0
+
+    k1.markdown(f'<div class="metric-card"><h3>전체 공원 월평균</h3>'
+                f'<div class="value">{total_mean:,.0f}</div></div>', unsafe_allow_html=True)
+    k2.markdown(f'<div class="metric-card"><h3>{selected_park} 월평균</h3>'
+                f'<div class="value">{park_mean:,.0f}</div></div>', unsafe_allow_html=True)
+    k3.markdown(f'<div class="metric-card"><h3>전체 대비 차이</h3>'
+                f'<div class="value" style="color:{"#E8505B" if diff_pct>=0 else "#4b7bec"}">'
+                f'{"▲" if diff_pct>=0 else "▼"}{abs(diff_pct):.1f}%</div></div>',
+                unsafe_allow_html=True)
+
+    search_corr = merged[selected_park].corr(merged["총이용객"]) if selected_park in merged.columns else 0
+    k4.markdown(f'<div class="metric-card"><h3>검색량↔이용객 상관</h3>'
+                f'<div class="value">{search_corr:.3f}</div></div>', unsafe_allow_html=True)
 
     st.markdown("")
-    st.markdown('<h3 class="section-header">시계열 추이</h3>', unsafe_allow_html=True)
-    fig_ts = make_subplots(specs=[[{"secondary_y": True}]])
-    fig_ts.add_trace(go.Scatter(x=merged["연월"],y=merged["총이용객"],name="총이용객",
-                                line=dict(color="#2E86AB",width=2.5)), secondary_y=False)
-    fig_ts.add_trace(go.Scatter(x=merged["연월"],y=merged[selected_park],
-                                name=f"{selected_park} 검색량",
-                                line=dict(color="#E8505B",width=2,dash="dot")), secondary_y=True)
-    fig_ts.update_layout(height=400,template="plotly_white",legend=dict(orientation="h",y=1.12))
-    fig_ts.update_yaxes(title_text="총이용객", secondary_y=False)
-    fig_ts.update_yaxes(title_text="검색량", secondary_y=True)
-    st.plotly_chart(fig_ts, use_container_width=True)
 
-    col_a,col_b = st.columns(2)
+    # ── 1. 시계열: 전체 평균 vs 선택 공원 ──────────────────────
+    st.markdown('<h3 class="section-header">📈 월별 이용객 추이 — 전체 평균 vs 선택 공원</h3>',
+                unsafe_allow_html=True)
+
+    if has_park:
+        park_monthly = park_df.groupby("연월")["총이용자"].mean().reset_index()
+        park_monthly.columns = ["연월", "선택공원"]
+        ts_df = pd.merge(all_monthly, park_monthly, on="연월", how="outer").sort_values("연월")
+
+        fig_ts = go.Figure()
+        fig_ts.add_trace(go.Scatter(
+            x=ts_df["연월"], y=ts_df["전체평균"],
+            name="전체 공원 평균",
+            line=dict(color="#94A3B8", width=2, dash="dot"),
+            fill="tozeroy", fillcolor="rgba(148,163,184,0.08)"
+        ))
+        fig_ts.add_trace(go.Scatter(
+            x=ts_df["연월"], y=ts_df["선택공원"],
+            name=selected_park,
+            line=dict(color="#2E86AB", width=3),
+            fill="tozeroy", fillcolor="rgba(46,134,171,0.10)"
+        ))
+        fig_ts.update_layout(
+            height=420, template="plotly_white",
+            legend=dict(orientation="h", y=1.12),
+            yaxis_title="월 이용객 수",
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig_ts, use_container_width=True)
+    else:
+        st.warning("선택 공원의 데이터가 없습니다.")
+
+    # ── 2. 공원별 평균 이용객 랭킹 (선택 공원 강조) ─────────────
+    st.markdown('<h3 class="section-header">🏆 공원별 월평균 이용객 랭킹</h3>',
+                unsafe_allow_html=True)
+
+    if "공원명" in df_park.columns:
+        rank_df = df_park.groupby("공원명")["총이용자"].mean().sort_values(ascending=True).reset_index()
+        rank_df.columns = ["공원명", "월평균 이용객"]
+
+        bar_colors = [
+            "#E8505B" if p == selected_park else "#2E86AB"
+            for p in rank_df["공원명"]
+        ]
+        rank_df["강조"] = rank_df["공원명"].apply(
+            lambda x: f"⭐ {x}" if x == selected_park else x
+        )
+
+        fig_rank = go.Figure(go.Bar(
+            x=rank_df["월평균 이용객"],
+            y=rank_df["강조"],
+            orientation="h",
+            marker_color=bar_colors,
+            text=[f"{v:,.0f}" for v in rank_df["월평균 이용객"]],
+            textposition="outside",
+        ))
+        # 전체 평균선
+        fig_rank.add_vline(
+            x=total_mean, line_dash="dash", line_color="gray",
+            annotation_text=f"전체 평균 {total_mean:,.0f}",
+            annotation_position="top"
+        )
+        fig_rank.update_layout(height=420, template="plotly_white",
+                               xaxis_title="월평균 이용객 수")
+        st.plotly_chart(fig_rank, use_container_width=True)
+
+    # ── 3. 계절별 비교 ──────────────────────────────────────────
+    st.markdown('<h3 class="section-header">🍂 계절별 이용객 — 전체 평균 vs 선택 공원</h3>',
+                unsafe_allow_html=True)
+
+    season_order = ["봄", "여름", "가을", "겨울"]
+
+    all_season  = df_park.groupby("계절")["총이용자"].mean().reindex(season_order).reset_index()
+    all_season.columns = ["계절", "전체평균"]
+
+    col_a, col_b = st.columns(2)
+
     with col_a:
-        st.markdown('<h3 class="section-header">계절별 분포</h3>', unsafe_allow_html=True)
-        fig_s = px.box(merged, x="계절", y="총이용객", color="계절",
-                       color_discrete_sequence=["#26de81","#fd9644","#fc5c65","#4b7bec"])
-        fig_s.update_layout(height=350,showlegend=False,template="plotly_white")
-        st.plotly_chart(fig_s, use_container_width=True)
+        if has_park:
+            park_season = park_df.groupby("계절")["총이용자"].mean().reindex(season_order).reset_index()
+            park_season.columns = ["계절", "선택공원"]
+            season_df = pd.merge(all_season, park_season, on="계절")
+
+            fig_season = go.Figure()
+            fig_season.add_trace(go.Bar(
+                name="전체 평균", x=season_df["계절"], y=season_df["전체평균"],
+                marker_color="#94A3B8", opacity=0.8,
+                text=[f"{v:,.0f}" for v in season_df["전체평균"]],
+                textposition="outside"
+            ))
+            fig_season.add_trace(go.Bar(
+                name=selected_park, x=season_df["계절"], y=season_df["선택공원"],
+                marker_color="#2E86AB",
+                text=[f"{v:,.0f}" for v in season_df["선택공원"]],
+                textposition="outside"
+            ))
+            fig_season.update_layout(
+                barmode="group", height=380, template="plotly_white",
+                legend=dict(orientation="h", y=1.12),
+                title="계절별 평균 이용객 비교"
+            )
+            st.plotly_chart(fig_season, use_container_width=True)
+
     with col_b:
-        st.markdown('<h3 class="section-header">월별 평균</h3>', unsafe_allow_html=True)
-        ma = merged.groupby("월")["총이용객"].mean().reset_index()
-        fig_m = px.bar(ma, x="월", y="총이용객", color="총이용객", color_continuous_scale="Blues")
-        fig_m.update_layout(height=350,template="plotly_white")
-        st.plotly_chart(fig_m, use_container_width=True)
+        # 계절별 비율 파이차트 (선택 공원)
+        if has_park:
+            pie_df = park_df.groupby("계절")["총이용자"].sum().reindex(season_order).reset_index()
+            pie_df.columns = ["계절", "이용객"]
+            fig_pie = px.pie(
+                pie_df, names="계절", values="이용객",
+                color="계절",
+                color_discrete_map={
+                    "봄":"#26de81","여름":"#fd9644","가을":"#fc5c65","겨울":"#4b7bec"
+                },
+                title=f"{selected_park} 계절별 이용객 비율",
+                hole=0.4
+            )
+            fig_pie.update_traces(textinfo="percent+label", textfont_size=13)
+            fig_pie.update_layout(height=380, template="plotly_white",
+                                  showlegend=False)
+            st.plotly_chart(fig_pie, use_container_width=True)
 
-    st.markdown('<h3 class="section-header">공원별 평균 검색량 비교</h3>', unsafe_allow_html=True)
-    pm = merged[park_list].mean().sort_values(ascending=True).reset_index()
-    pm.columns = ["공원","평균 검색량"]
-    colors = ["#E8505B" if p==selected_park else "#2E86AB" for p in pm["공원"]]
-    fig_pb = go.Figure(go.Bar(x=pm["평균 검색량"],y=pm["공원"],orientation="h",marker_color=colors))
-    fig_pb.update_layout(height=400,template="plotly_white")
-    st.plotly_chart(fig_pb, use_container_width=True)
+    # ── 4. 월별 평균 비교 ───────────────────────────────────────
+    st.markdown('<h3 class="section-header">📅 월별 평균 이용객 — 전체 vs 선택 공원</h3>',
+                unsafe_allow_html=True)
 
-    st.markdown('<h3 class="section-header">공원 간 검색량 상관관계</h3>', unsafe_allow_html=True)
-    corr_m = merged[park_list].corr()
-    fig_h = px.imshow(corr_m, text_auto=".2f", color_continuous_scale="RdBu_r", aspect="auto")
-    fig_h.update_layout(height=500,template="plotly_white")
-    st.plotly_chart(fig_h, use_container_width=True)
+    all_month  = df_park.groupby("월")["총이용자"].mean().reset_index()
+    all_month.columns = ["월", "전체평균"]
 
+    if has_park:
+        park_month = park_df.groupby("월")["총이용자"].mean().reset_index()
+        park_month.columns = ["월", "선택공원"]
+        month_df   = pd.merge(all_month, park_month, on="월").sort_values("월")
+
+        fig_month = go.Figure()
+        fig_month.add_trace(go.Scatter(
+            x=month_df["월"], y=month_df["전체평균"],
+            name="전체 평균", mode="lines+markers",
+            line=dict(color="#94A3B8", width=2, dash="dot"),
+            marker=dict(size=7)
+        ))
+        fig_month.add_trace(go.Scatter(
+            x=month_df["월"], y=month_df["선택공원"],
+            name=selected_park, mode="lines+markers",
+            line=dict(color="#2E86AB", width=3),
+            marker=dict(size=9, symbol="circle")
+        ))
+        fig_month.update_layout(
+            height=380, template="plotly_white",
+            xaxis=dict(tickmode="array", tickvals=list(range(1,13)),
+                       ticktext=["1월","2월","3월","4월","5월","6월",
+                                 "7월","8월","9월","10월","11월","12월"]),
+            yaxis_title="평균 이용객 수",
+            legend=dict(orientation="h", y=1.12),
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig_month, use_container_width=True)
+
+    # ── 5. 전체 공원 계절별 히트맵 ──────────────────────────────
+    st.markdown('<h3 class="section-header">🌡️ 공원별 × 계절별 평균 이용객 히트맵</h3>',
+                unsafe_allow_html=True)
+
+    if "공원명" in df_park.columns:
+        heat_df = df_park.groupby(["공원명","계절"])["총이용자"].mean().unstack()
+        heat_df = heat_df.reindex(columns=season_order)
+
+        fig_heat = px.imshow(
+            heat_df,
+            color_continuous_scale="Blues",
+            aspect="auto",
+            text_auto=".0f",
+            labels=dict(color="평균 이용객")
+        )
+        # 선택 공원 강조 (테두리)
+        if selected_park in heat_df.index:
+            row_idx = list(heat_df.index).index(selected_park)
+            fig_heat.add_shape(
+                type="rect",
+                x0=-0.5, x1=3.5,
+                y0=row_idx-0.5, y1=row_idx+0.5,
+                line=dict(color="#E8505B", width=3),
+            )
+        fig_heat.update_layout(height=420, template="plotly_white",
+                               title=f"공원별 × 계절별 평균 이용객 (빨간 테두리 = {selected_park})")
+        st.plotly_chart(fig_heat, use_container_width=True)
 
 # ══════════════════════════════════════════════
 # 🔬 t-test & VIF
