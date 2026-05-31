@@ -776,6 +776,7 @@ elif page == "🤖 모델 예측 (pkl)":
     r2   = r2_score(yo_te, pred_pkl)
 
     k1,k2,k3 = st.columns(3)
+    mean_visitors = merged["총이용객"].mean()
     mape_rmse = rmse / merged["총이용객"].mean() * 100
     mape_mae  = mae  / merged["총이용객"].mean() * 100
 
