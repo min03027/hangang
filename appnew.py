@@ -1055,11 +1055,11 @@ elif page == "EDA":
                 style_fig(figp)
                 st.plotly_chart(figp, use_container_width=True, config={"displayModeBar": False})
 
-        figb = px.box(pm, x="월", y="총이용객", color="계절",
-                      category_orders={"월": list(range(1, 13))}, color_discrete_map=SEASON_C,
-                      points="outliers")
-        figb.update_layout(title="월별 이용객 분포 (공원 간)", height=420,
-                           xaxis=dict(dtick=1, title="월"), yaxis_title="이용객")
+        figb = px.box(pm, x="계절", y="총이용객", color="계절",
+                      category_orders={"계절": SEASON_ORDER}, color_discrete_map=SEASON_C,
+                      points="all")
+        figb.update_layout(title="계절별 이용객 분포 (공원-월)", height=420,
+                           xaxis=dict(title="계절"), yaxis_title="이용객", showlegend=False)
         style_fig(figb)
         st.plotly_chart(figb, use_container_width=True, config={"displayModeBar": False})
 
