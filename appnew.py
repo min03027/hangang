@@ -919,11 +919,19 @@ if page == "개요":
         except Exception as e:
             st.write("데이터 요약을 계산하는 동안 오류가 발생했습니다:", e)
 
-    # Parchment tile — 선택 공원 월별 추이
+    # Parchment tile — 월별 추이 (면적 + 이동평균)
     tile_open("parchment", anchor="sample")
     st.markdown('<h2 class="h-section">월별 이용객 추이 (전체 합계)</h2>', unsafe_allow_html=True)
-    fig = px.line(monthly, x="연월", y="총이용객")
-    fig.update_traces(line=dict(color=TOK["primary"], width=2.4))
+    _m = monthly.sort_values("연월")
+    _roll = _m["총이용객"].rolling(12, min_periods=1).mean()
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=_m["연월"], y=_m["총이용객"], name="월 합계", mode="lines",
+                             line=dict(color=TOK["primary"], width=2.4),
+                             fill="tozeroy", fillcolor="rgba(0,102,204,0.08)"))
+    fig.add_trace(go.Scatter(x=_m["연월"], y=_roll, name="12개월 이동평균", mode="lines",
+                             line=dict(color=TOK["ink"], width=1.6, dash="dot")))
+    fig.update_layout(height=400, hovermode="x unified",
+                      xaxis=dict(rangeslider=dict(visible=True), title=""))
     style_fig(fig)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     tile_close()
@@ -952,36 +960,85 @@ elif page == "EDA":
     tile_open("light", anchor="eda")
     st.markdown('<h2 class="h-section">탐색적 데이터 분석</h2>', unsafe_allow_html=True)
 
-    tabs = st.tabs(["월별 추이", "시간대 구성", "계절성", "변수 분포"])
+    SEASON_C = {"봄": "#34c759", "여름": "#0a84ff", "가을": "#ff9f0a", "겨울": "#5e5ce6"}
+    tabs = st.tabs(["월별 추이", "공원 × 월 히트맵", "공원별 비교", "월별 분포", "상관관계", "시간대 구성"])
 
+    # 1) 월별 추이 — 이동평균 + 최댓값 주석 + 레인지슬라이더
     with tabs[0]:
-        fig = px.line(monthly, x="연월", y="총이용객")
-        fig.update_traces(line=dict(color=TOK["primary"], width=2.4))
+        m = monthly.sort_values("연월")
+        roll = m["총이용객"].rolling(12, min_periods=1).mean()
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=m["연월"], y=m["총이용객"], name="월 합계", mode="lines",
+                                 line=dict(color=TOK["primary"], width=2.4),
+                                 fill="tozeroy", fillcolor="rgba(0,102,204,0.08)"))
+        fig.add_trace(go.Scatter(x=m["연월"], y=roll, name="12개월 이동평균", mode="lines",
+                                 line=dict(color=TOK["ink"], width=1.6, dash="dot")))
+        pk = m.loc[m["총이용객"].idxmax()]
+        fig.add_annotation(x=pk["연월"], y=pk["총이용객"], text=f"최대 {pk['총이용객']/1e6:.1f}M",
+                           showarrow=True, arrowhead=2, ax=0, ay=-32, font=dict(color=TOK["primary"]))
+        fig.update_layout(title="월별 총이용객 추이", height=440, hovermode="x unified",
+                          xaxis=dict(rangeslider=dict(visible=True), title=""))
         style_fig(fig)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
+    # 2) 공원 × 월 히트맵 — 계절 패턴 한눈에
     with tabs[1]:
-        df_long = monthly.melt(id_vars="연월", value_vars=time_cols, var_name="시간대", value_name="이용객")
-        fig = px.area(df_long, x="연월", y="이용객", color="시간대",
-                      color_discrete_sequence=[TOK["primary"], TOK["ink"], TOK["primary_on_dark"]])
+        piv = pm.pivot_table(index="공원명", columns="월", values="총이용객", aggfunc="mean")
+        piv = piv.reindex(columns=range(1, 13))
+        piv = piv.loc[piv.mean(axis=1).sort_values(ascending=False).index]
+        fig = px.imshow(piv / 1e4, color_continuous_scale="Blues", aspect="auto", text_auto=".0f",
+                        labels=dict(x="월", y="공원", color="평균(만명)"),
+                        x=[f"{i}월" for i in range(1, 13)])
+        fig.update_layout(title="공원 × 월 평균 이용객 (만 명)", height=480)
         style_fig(fig)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
+    # 3) 공원별 추이 비교 — 선택 공원 강조
     with tabs[2]:
-        season_df = monthly.groupby("계절")["총이용객"].mean().reindex(["봄", "여름", "가을", "겨울"]).reset_index()
-        fig = px.bar(season_df, x="계절", y="총이용객")
-        fig.update_traces(marker_color=TOK["primary"], marker_line_width=0)
+        fig = go.Figure()
+        for p in park_list:
+            d = pm[pm["공원명"] == p].sort_values("연월")
+            sel = (p == selected_park)
+            fig.add_trace(go.Scatter(
+                x=d["연월"], y=d["총이용객"], name=p, mode="lines",
+                line=dict(color=TOK["primary"] if sel else "rgba(140,140,150,0.45)",
+                          width=3.2 if sel else 1.2),
+                hovertemplate=f"{p}<br>%{{x|%Y-%m}} · %{{y:,.0f}}<extra></extra>",
+                showlegend=sel))
+        fig.update_layout(title=f"공원별 월 이용객 (강조: {selected_park})", height=480, hovermode="closest")
         style_fig(fig)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
+    # 4) 월별 분포 — 박스플롯(공원 간 분포), 계절 색
     with tabs[3]:
-        choices = [c for c in num_cols if c in monthly.columns][:6]
-        if choices:
-            picked = st.selectbox("변수", choices)
-            fig = px.histogram(monthly, x=picked, nbins=24)
-            fig.update_traces(marker_color=TOK["primary"], marker_line_width=0)
-            style_fig(fig)
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        fig = px.box(pm, x="월", y="총이용객", color="계절",
+                     category_orders={"월": list(range(1, 13))}, color_discrete_map=SEASON_C,
+                     points="outliers")
+        fig.update_layout(title="월별 이용객 분포 (공원 간)", height=460,
+                          xaxis=dict(dtick=1, title="월"), yaxis_title="이용객")
+        style_fig(fig)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # 5) 상관관계 — 타깃과 상관 높은 피처 히트맵
+    with tabs[4]:
+        cc = [c for c in feature_cols if c not in ("월sin", "월cos") and c in pm.columns]
+        top = pm[cc].corrwith(pm["총이용객"]).abs().sort_values(ascending=False).head(10).index.tolist()
+        corr = pm[top + ["총이용객"]].corr()
+        fig = px.imshow(corr, color_continuous_scale="RdBu", zmin=-1, zmax=1,
+                        aspect="auto", text_auto=".2f")
+        fig.update_layout(title="피처 상관관계 (타깃 상관 상위 10 + 총이용객)", height=560)
+        style_fig(fig)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # 6) 시간대 구성 — 비중(100%) 누적
+    with tabs[5]:
+        dl = monthly.melt(id_vars="연월", value_vars=time_cols, var_name="시간대", value_name="이용객")
+        fig = px.area(dl, x="연월", y="이용객", color="시간대", groupnorm="fraction",
+                      color_discrete_sequence=[TOK["primary"], TOK["primary_on_dark"], "#86868b"])
+        fig.update_layout(title="시간대별 이용 비중 (아침·낮·저녁)", height=420,
+                          yaxis=dict(tickformat=".0%"))
+        style_fig(fig)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     tile_close()
 
 
