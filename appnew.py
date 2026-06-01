@@ -886,31 +886,71 @@ if page == "개요":
     # Dark tile — features grid
     tile_open("dark", anchor="features")
     st.markdown(f"""
-    <h2 class="h-display" style="color:var(--on-dark)">하나의 대시보드, 여덟 가지 분석.</h2>
-    <p class="lead lead-on-dark">통계 검정과 머신러닝, 해석가능성과 불확실성을 한 화면에서.</p>
+    <h2 class="h-display" style="color:var(--on-dark)">하나의 대시보드, 아홉 가지 분석.</h2>
+    <p class="lead lead-on-dark">카드를 누르면 해당 분석으로 바로 이동합니다.</p>
     """, unsafe_allow_html=True)
 
-    st.markdown('<div style="height:48px"></div>', unsafe_allow_html=True)
+    # 클릭 가능한 카드 스타일 (keyed container)
+    st.markdown("""
+    <style>
+    [class*="st-key-navcard"] {
+      background: var(--tile2);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 18px;
+      padding: 22px 22px 6px 22px;
+      height: 100%;
+      transition: transform .14s ease, border-color .14s ease, box-shadow .14s ease;
+    }
+    [class*="st-key-navcard"]:hover {
+      transform: translateY(-4px);
+      border-color: var(--primary-on-dark);
+      box-shadow: 0 12px 30px rgba(0,0,0,0.40);
+    }
+    [class*="st-key-navcard"] .stButton > button {
+      background: transparent !important;
+      color: var(--primary-on-dark) !important;
+      border: none;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      border-radius: 0;
+      padding: 12px 0 6px 0;
+      margin-top: 12px;
+      font-size: 14px;
+      font-weight: 600;
+      justify-content: flex-start;
+    }
+    [class*="st-key-navcard"] .stButton > button:hover { color: #fff !important; }
+    [class*="st-key-navcard"] .stButton > button:focus { outline: none; box-shadow: none; }
+    </style>
+    """, unsafe_allow_html=True)
+    st.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
 
-    rows = [
-        [("chart",    "EDA",            "월별 추이 · 계절성 · 변수 분포를 한눈에."),
-         ("scatter",  "t-test & VIF",   "유의미한 피처를 골라내고, 공선성을 제거."),
-         ("model",    "예측 모델",      "사전학습 pkl 모델로 즉시 추론.")],
-        [("diag",     "잔차 진단",      "Q-Q, 등분산성, 자기상관까지 정량 평가."),
-         ("shap",     "SHAP",           "전역·국소 기여도로 의사결정을 설명."),
-         ("interval", "Conformal",      "분포 가정 없이 예측 구간을 보장.")],
+    FEATURES = [
+        ("EDA",            "chart",    "월별 추이 · 계절성 · 변수 분포"),
+        ("t-test & VIF",   "scatter",  "유의 피처 선별 · 공선성 제거"),
+        ("모델 예측",       "model",    "RandomForest 예측 · 변수 중요도"),
+        ("예측 시뮬레이터",  "boot",     "입력 조정 → 실시간 예측"),
+        ("잔차 진단",       "diag",     "Q-Q · 등분산 · 정규성 진단"),
+        ("SHAP 해석",       "shap",     "전역 변수 기여도 해석"),
+        ("Conformal",      "interval", "분포가정 없는 예측구간"),
+        ("Bootstrap CI",   "boot",     "성능지표 신뢰구간"),
+        ("Nested CV",      "cv",       "과적합 없는 일반화 추정"),
     ]
-    for row in rows:
+    for r in range(0, len(FEATURES), 3):
         cols = st.columns(3, gap="medium")
-        for col, (ic, title, desc) in zip(cols, row):
-            col.markdown(f"""
-            <div class="card card-dark" style="min-height: 180px;">
-              <div style="margin-bottom:14px">{icon(ic, 24, TOK['on_dark'], TOK['primary_on_dark'])}</div>
-              <div class="body-strong" style="color:var(--on-dark)">{title}</div>
-              <div class="caption" style="color:var(--muted-dark); margin-top:6px; line-height:1.5">{desc}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        st.markdown('<div style="height:20px"></div>', unsafe_allow_html=True)
+        for j, (title, ic, desc) in enumerate(FEATURES[r:r + 3]):
+            i = r + j
+            with cols[j]:
+                with st.container(key=f"navcard_{i}"):
+                    st.markdown(
+                        f'<div style="margin-bottom:12px">{icon(ic, 26, TOK["on_dark"], TOK["primary_on_dark"])}</div>'
+                        f'<div class="body-strong" style="color:var(--on-dark)">{title}</div>'
+                        f'<div class="caption" style="color:var(--muted-dark); margin-top:6px; '
+                        f'line-height:1.5; min-height:38px">{desc}</div>',
+                        unsafe_allow_html=True)
+                    if st.button("열기 →", key=f"nav_{i}", use_container_width=True):
+                        st.session_state["_nav"] = title
+                        st.rerun()
+        st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
     tile_close()
 
     # 지도는 페이지 최상단(히어로 위)으로 이동됨. 여기서는 데이터 검증만.
