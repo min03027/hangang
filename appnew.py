@@ -632,8 +632,8 @@ def render_global_nav() -> None:
         <a href="#uncertainty">불확실성</a>
       </div>
       <div class="nav-links">
-        <a href="#search">{icon('search', 16, TOK['on_dark'])}</a>
-        <a href="#bag">{icon('bag', 16, TOK['on_dark'])}</a>
+        <span title="한강공원" style="display:flex">{icon('wave', 16, TOK['on_dark'], TOK['primary_on_dark'])}</span>
+        <span title="분석 대시보드" style="display:flex">{icon('chart', 16, TOK['on_dark'], TOK['primary_on_dark'])}</span>
       </div>
     </div>
     """, unsafe_allow_html=True)
@@ -790,10 +790,9 @@ with st.sidebar:
 
 
 # ─────────────────────────────────────────────────────────────
-# Global + sub nav
+# Global nav
 # ─────────────────────────────────────────────────────────────
 render_global_nav()
-render_sub_nav(f"한강공원 · {selected_park}" if selected_park else "한강공원")
 
 
 # ─────────────────────────────────────────────────────────────
