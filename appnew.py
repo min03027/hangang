@@ -488,73 +488,112 @@ def load_data():
         df = pd.read_csv(csv_path, encoding="utf-8")
         df["현황 일시"] = pd.to_datetime(df["현황 일시"])
 
-    df["연월"] = df["현황 일시"].dt.to_period("M")
+    df["연월"] = df["현황 일시"].dt.to_period("M").dt.to_timestamp()
+    df["월"] = df["연월"].dt.month
     time_cols = ["일반이용자(아침)", "일반이용자(낮)", "일반이용자(저녁)"]
 
     # 피처에서 제외할 메타/ID/주소/일시 컬럼 (이름 기반 — pandas 3.0 string dtype 대응)
     META_HINTS = ["일련번호", "코드", "주소", "시명", "구명", "등록", "수정", "일시"]
-    LEAK = set(time_cols) | {"총이용객", "월"}
+    EXCL = set(time_cols) | {"총이용객", "월", "공원명", "현황 일시", "연월", "계절", "검색량", "월sin", "월cos"}
 
     def is_feature(col: str) -> bool:
-        if col in LEAK or col in ("공원명", "현황 일시", "연월", "계절", "검색량"):
-            return False
-        return not any(h in col for h in META_HINTS)
+        return col not in EXCL and not any(h in col for h in META_HINTS)
 
-    feature_cols = [c for c in df.columns if is_feature(c)]
-    # 시간대(누수) + 피처 컬럼을 숫자로 강제 변환
-    for c in time_cols + feature_cols:
+    base_feats = [c for c in df.columns if is_feature(c)]
+    for c in time_cols + base_feats:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     df["총이용객"] = df[time_cols].sum(axis=1)
 
-    # 월별 집계: 시설/이용객은 모두 합계 (pkl 학습 파이프라인과 동일)
-    agg_cols = ["총이용객"] + [c for c in time_cols if c in df.columns] + feature_cols
-    agg_cols = list(dict.fromkeys(agg_cols))   # dedup, 순서 유지
-    monthly = df.groupby("연월")[agg_cols].sum().reset_index()
-    monthly["연월"] = monthly["연월"].dt.to_timestamp()
-    monthly["월"] = monthly["연월"].dt.month
-
     def season(m: int) -> str:
         return "봄" if m in (3, 4, 5) else "여름" if m in (6, 7, 8) else "가을" if m in (9, 10, 11) else "겨울"
 
-    monthly["계절"] = monthly["월"].apply(season)
+    df["계절"] = df["월"].map(season)
+    # 계절성(실제 달력 기반 주기 피처)
+    df["월sin"] = np.sin(2 * np.pi * df["월"] / 12)
+    df["월cos"] = np.cos(2 * np.pi * df["월"] / 12)
 
-    # 네이버 검색 트렌드 병합 → 검색량 (app.py와 동일 소스)
+    # 네이버 트렌드: 공원별(long) → 공원-월 검색량, 통합("한강공원") → 월별 집계용
+    integ = None
     trend_path = os.path.join(data_dir, "trend.xlsx")
-    if os.path.exists(trend_path) and "한강공원" not in monthly.columns:
-        trend = pd.read_excel(trend_path).rename(columns={"날짜": "연월"})
-        trend["연월"] = pd.to_datetime(trend["연월"])
-        if "한강공원" in trend.columns:
-            tsub = trend[["연월", "한강공원"]].rename(columns={"한강공원": "검색량"})
-            monthly = pd.merge(monthly, tsub, on="연월", how="left")
-            monthly["검색량"] = monthly["검색량"].fillna(monthly["검색량"].median())
-    if "검색량" not in monthly.columns:
-        monthly["검색량"] = pd.to_numeric(monthly.get("한강공원", 0), errors="coerce").fillna(0)
+    if os.path.exists(trend_path):
+        tr = pd.read_excel(trend_path).rename(columns={"날짜": "연월"})
+        tr["연월"] = pd.to_datetime(tr["연월"])
+        pcols = [c for c in tr.columns if c.endswith("한강공원") and c != "한강공원"]
+        if pcols:
+            trl = tr.melt(id_vars="연월", value_vars=pcols, var_name="공원명", value_name="검색량")
+            df = pd.merge(df, trl, on=["연월", "공원명"], how="left")
+        if "한강공원" in tr.columns:
+            integ = tr[["연월", "한강공원"]].rename(columns={"한강공원": "검색량"})
+    if "검색량" not in df.columns:
+        df["검색량"] = np.nan
+    df["검색량"] = pd.to_numeric(df["검색량"], errors="coerce")
+    df["검색량"] = df["검색량"].fillna(df["검색량"].median() if df["검색량"].notna().any() else 0.0)
 
-    # 모델링 피처 = 시설 피처 + 검색량 (ID/주소/시간대 누수 제외)
-    feat_final = [c for c in feature_cols if c in monthly.columns] + ["검색량"]
-    feat_final = list(dict.fromkeys(feat_final))
+    # 시설 피처(분산 0 = 정보 없음 제외) + 검색량 + 계절성
+    fac = [c for c in base_feats if df[c].std() > 0]
+    feature_cols = fac + ["검색량", "월sin", "월cos"]
 
-    park_list = df["공원명"].dropna().unique().tolist() if "공원명" in df.columns else []
-    return monthly, df, feat_final, time_cols, park_list
+    keep = ["공원명", "연월", "월", "계절", "총이용객"] + fac + ["검색량", "월sin", "월cos"] \
+        + [c for c in time_cols if c in df.columns]
+    pm = df[list(dict.fromkeys(keep))].copy()    # 공원-월 단위 (≈815행)
 
-
-pkl_model, pkl_scaler, pkl_features, pkl_name, pkl_meta = load_pkl_model()
-monthly, raw_df, num_cols, time_cols, park_list = load_data()
-
-
-# ─────────────────────────────────────────────────────────────
-# 모델 입력 행렬 — pkl이 아는 피처만 사용 (없으면 정제된 전체 피처)
-# 누수(시간대)·ID 컬럼은 load_data 단계에서 이미 제외됨
-# ─────────────────────────────────────────────────────────────
-def get_Xy(df_monthly):
-    if pkl_features:
-        cols = [c for c in pkl_features if c in df_monthly.columns]
+    # 월별 집계 (설명용 차트/Overview)
+    monthly = pm.groupby("연월")[["총이용객"] + [c for c in time_cols if c in pm.columns] + fac].sum().reset_index()
+    monthly["월"] = monthly["연월"].dt.month
+    monthly["계절"] = monthly["월"].map(season)
+    if integ is not None:
+        monthly = pd.merge(monthly, integ, on="연월", how="left")
+        monthly["검색량"] = monthly["검색량"].fillna(monthly["검색량"].median())
     else:
-        cols = [c for c in num_cols if c in df_monthly.columns]
-    X = df_monthly[cols].astype(float).fillna(0)
-    y = df_monthly["총이용객"].values
-    return X, y, cols
+        monthly = pd.merge(monthly, pm.groupby("연월")["검색량"].mean().reset_index(), on="연월", how="left")
+
+    park_list = pm["공원명"].dropna().unique().tolist()
+    return monthly, pm, feature_cols, time_cols, park_list
+
+
+monthly, pm, num_cols, time_cols, park_list = load_data()
+raw_df = pm                      # Overview 랭킹/검증 expander 호환
+feature_cols = num_cols          # 모델 피처 = 시설 + 검색량 + 계절성
+
+
+# ─────────────────────────────────────────────────────────────
+# 모델: 공원-월(815행) RandomForest (공원 원핫 + 공원별 검색량 + 계절성)
+#   · 실데이터·실분석. 학습/검증을 인앱에서 직접 수행 (캐시)
+# ─────────────────────────────────────────────────────────────
+@st.cache_resource
+def get_bundle(_pm, feats):
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.compose import ColumnTransformer
+    from sklearn.preprocessing import OneHotEncoder
+    from sklearn.pipeline import Pipeline
+    from sklearn.model_selection import train_test_split, cross_val_score, cross_val_predict, KFold
+
+    X = _pm[feats + ["공원명"]].copy()
+    y = _pm["총이용객"].values
+    pre = ColumnTransformer([
+        ("num", "passthrough", feats),
+        ("park", OneHotEncoder(handle_unknown="ignore"), ["공원명"]),
+    ])
+    model = Pipeline([("pre", pre),
+                      ("rf", RandomForestRegressor(n_estimators=400, random_state=42, n_jobs=-1))])
+    kf = KFold(5, shuffle=True, random_state=42)
+    cv = cross_val_score(model, X, y, cv=kf, scoring="r2")
+    oof = cross_val_predict(model, X, y, cv=kf)        # 폴드별 검증 예측 (정직한 대표 성능)
+    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
+    model.fit(Xtr, ytr)
+    names = [n.split("__", 1)[-1] for n in model.named_steps["pre"].get_feature_names_out()]
+    return {"model": model, "X": X, "y": y, "Xtr": Xtr, "Xte": Xte,
+            "ytr": ytr, "yte": yte, "cv": cv, "oof": oof, "names": names}
+
+
+bundle = get_bundle(pm, feature_cols)
+
+
+def get_Xy(df_in=None):
+    src = pm if df_in is None else df_in
+    cols = [c for c in feature_cols if c in src.columns]
+    return src[cols].astype(float).fillna(0), src["총이용객"].values, cols
 
 
 # ─────────────────────────────────────────────────────────────
@@ -653,47 +692,6 @@ def nearest_park(lat: float, lng: float) -> str:
                key=lambda kv: math.hypot(lat - kv[1][0], lng - kv[1][1]))[0]
 
 
-# ─────────────────────────────────────────────────────────────
-# 데모(합성) 데이터 — 실측이 아니라 파이프라인 시연용
-#   · 실제 피처 분포를 샘플링 + 타깃을 pkl 관계 + 소량 노이즈로 생성
-#   · 따라서 모델/잔차/구간/CV 가 일관되게 깔끔히 나옴 (성능은 데모값)
-# ─────────────────────────────────────────────────────────────
-def make_demo_data(real_monthly, n=180):
-    rs = np.random.RandomState(42)
-    feats = list(pkl_features)
-    base = real_monthly[feats].values
-    idx = rs.randint(0, len(base), n)
-    Xsyn = np.clip(base[idx] * (1 + rs.normal(0, 0.10, (n, len(feats)))), 0, None)
-    Xdf = pd.DataFrame(Xsyn, columns=feats)
-    yhat = pkl_model.predict(pkl_scaler.transform(Xdf))
-    y = np.clip(yhat + rs.normal(0, 0.25 * np.std(yhat), n), np.percentile(yhat, 2), None)
-
-    months = pd.date_range("2014-01-01", periods=n, freq="MS")
-    dm = Xdf.copy()
-    dm["총이용객"] = y
-    dm["연월"] = months
-    dm["월"] = months.month
-    dm["계절"] = dm["월"].map(lambda m: "봄" if m in (3, 4, 5) else "여름" if m in (6, 7, 8)
-                              else "가을" if m in (9, 10, 11) else "겨울")
-    dm["일반이용자(아침)"] = y * 0.25
-    dm["일반이용자(낮)"]   = y * 0.45
-    dm["일반이용자(저녁)"] = y * 0.30
-
-    parks = list(PARK_COORDS.keys())
-    w = rs.dirichlet(np.ones(len(parks)) * 3)
-    rows = []
-    for i, mo in enumerate(months):
-        for p, wp in zip(parks, w):
-            rows.append({"공원명": p, "현황 일시": mo, "연월": pd.Period(mo, "M"),
-                         "총이용객": float(y[i] * wp * (1 + rs.normal(0, 0.05)))})
-    raw = pd.DataFrame(rows)
-    return dm, raw, feats, ["일반이용자(아침)", "일반이용자(낮)", "일반이용자(저녁)"], parks
-
-
-DEMO_MODE = (bool(st.session_state.get("demo_mode", False))
-             and pkl_model is not None and bool(pkl_features))
-if DEMO_MODE:
-    monthly, raw_df, num_cols, time_cols, park_list = make_demo_data(monthly, n=180)
 
 
 def metric_card(num: str, label: str, delta: str | None = None, *, dark: bool = False) -> str:
@@ -727,12 +725,6 @@ with st.sidebar:
       </div>
     </div>
     """, unsafe_allow_html=True)
-
-    st.checkbox("데모(합성) 데이터", key="demo_mode",
-                help="실측 대신 합성 데이터로 파이프라인을 시연합니다. 표시되는 성능 지표는 데모용입니다.")
-    if DEMO_MODE:
-        st.markdown('<div class="caption" style="color:#E8505B; margin:-4px 0 8px 0">'
-                    '⚠️ 합성 데이터(데모) 표시 중</div>', unsafe_allow_html=True)
 
     # 지도/네비 클릭 결과를 위젯 생성 '전'에 반영 (위젯 키는 생성 후 수정 불가)
     if "_map_pick" in st.session_state:
@@ -789,9 +781,10 @@ with st.sidebar:
     st.markdown(f"""
     <div class="caption" style="line-height:1.7">
       <div class="body-strong" style="color:var(--ink); margin-bottom:6px">데이터 요약</div>
+      공원-월 표본 · {len(pm):,}<br/>
       관측 월수 · {len(monthly):,}<br/>
-      변수 수 · {len(num_cols)}<br/>
-      모델 · {pkl_name or '없음'}
+      피처 수 · {len(num_cols)}<br/>
+      모델 · RandomForest
     </div>
     """, unsafe_allow_html=True)
 
@@ -1035,145 +1028,124 @@ elif page == "t-test & VIF":
 
 
 elif page == "모델 예측":
+    from sklearn.metrics import r2_score, mean_absolute_error
+
     tile_open("dark", anchor="model")
-    st.markdown(f"""
-    <h2 class="h-display" style="color:var(--on-dark)">사전학습 모델로, 한 번에 추론.</h2>
-    <p class="lead lead-on-dark">model/ 폴더의 pkl을 로드해 예측 · 잔차 · 지표를 함께 산출합니다.</p>
+    st.markdown("""
+    <h2 class="h-display" style="color:var(--on-dark)">공원·월 단위로, 더 정교하게.</h2>
+    <p class="lead lead-on-dark">11개 공원 × 월별 815건을 RandomForest로 학습해 이용객을 예측합니다.</p>
     """, unsafe_allow_html=True)
     tile_close()
 
     tile_open("light")
     st.markdown('<h2 class="h-section">모델 예측 결과</h2>', unsafe_allow_html=True)
 
-    if pkl_model is None:
-        st.markdown(f"""
-        <div class="card" style="text-align:center; padding:48px 24px;">
-          <div style="margin-bottom:16px">{icon('model', 32, TOK['ink_48'])}</div>
-          <div class="body-strong">모델 파일을 찾을 수 없습니다</div>
-          <div class="caption" style="margin-top:6px">algo-harness/model/ 폴더에 .pkl 파일을 두세요.</div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        try:
-            from sklearn.linear_model import Ridge
-            from sklearn.metrics import r2_score, mean_absolute_error
-            from sklearn.preprocessing import StandardScaler
+    model = bundle["model"]
+    y_all = bundle["y"]
+    oof = bundle["oof"]                       # 폴드별 검증 예측 (전 815건, 정직)
+    oof_r2  = r2_score(y_all, oof)
+    oof_mae = mean_absolute_error(y_all, oof)
+    cv_mean, cv_std = float(bundle["cv"].mean()), float(bundle["cv"].std())
 
-            X, y, used_cols = get_Xy(monthly)   # pkl이 아는 8개 피처 (검색량 포함)
+    c1, c2, c3 = st.columns(3, gap="medium")
+    c1.markdown(metric_card(f"{cv_mean:.3f}", "5-fold CV R²",
+                            delta=f"+±{cv_std:.3f}"), unsafe_allow_html=True)
+    c2.markdown(metric_card(f"{oof_mae/1000:.1f}K", "검증 MAE (OOF)"), unsafe_allow_html=True)
+    c3.markdown(metric_card("RandomForest", f"모델 ({len(y_all):,}건)"), unsafe_allow_html=True)
+    st.markdown(f'<div class="caption" style="margin-top:12px">공원-월 {len(y_all):,}건 · '
+                f'5-fold 교차검증 R² {cv_mean:.3f} (±{cv_std:.3f}) · 폴드별 검증 예측 결합 R² {oof_r2:.3f} · '
+                f'공원 원핫 + 공원별 검색량 + 계절성 + 시설 피처.</div>',
+                unsafe_allow_html=True)
 
-            if pkl_scaler is not None and pkl_features and len(used_cols) == len(pkl_features):
-                preds = pkl_model.predict(pkl_scaler.transform(X))
-                used_pkl = True
-            else:
-                # pkl을 쓸 수 없을 때만 동일 피처로 Ridge 재학습 (누수 컬럼 없음)
-                scaler = StandardScaler().fit(X)
-                preds = Ridge(alpha=1.0).fit(scaler.transform(X), y).predict(scaler.transform(X))
-                used_pkl = False
+    st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
 
-            # 현재 데이터 재계산 지표 (학습 데이터 포함 → 낙관적일 수 있음)
-            r2  = r2_score(y, preds)
-            mae = mean_absolute_error(y, preds)
+    # 실측 vs 예측 산점도 (폴드별 검증 예측, 전 표본)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=y_all, y=oof, mode="markers",
+                             marker=dict(color=TOK["primary"], size=6, opacity=0.55), name="검증 예측"))
+    lim = [float(min(y_all.min(), oof.min())), float(max(y_all.max(), oof.max()))]
+    fig.add_trace(go.Scatter(x=lim, y=lim, mode="lines",
+                             line=dict(color=TOK["ink"], dash="dot"), name="완벽 예측"))
+    fig.update_layout(title="실측 vs 검증 예측 (전 815건, 폴드 OOF)",
+                      xaxis_title="실측 이용객", yaxis_title="예측 이용객", height=440)
+    style_fig(fig)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-            # 표시 지표: 데모면 현재 데이터 기준, 실측이면 pkl 저장 검증값 우선
-            if DEMO_MODE:
-                disp_r2, disp_mae = r2, mae
-            else:
-                disp_r2  = pkl_meta.get("test_r2",  r2)  if used_pkl else r2
-                disp_mae = pkl_meta.get("test_mae", mae) if used_pkl else mae
-
-            c1, c2, c3 = st.columns(3, gap="medium")
-            c1.markdown(metric_card(f"{disp_r2:.3f}",        "R²"),          unsafe_allow_html=True)
-            c2.markdown(metric_card(f"{disp_mae/1000:.1f}K", "MAE"),         unsafe_allow_html=True)
-            c3.markdown(metric_card(pkl_name or "Ridge",     "사용 모델"),   unsafe_allow_html=True)
-
-            if DEMO_MODE:
-                st.markdown(
-                    '<div class="caption" style="margin-top:12px; color:#E8505B">⚠️ 합성 데이터(데모) 기준 지표입니다.</div>',
-                    unsafe_allow_html=True)
-            elif used_pkl and pkl_meta:
-                st.markdown(
-                    f'<div class="caption" style="margin-top:12px">검증셋 기준 저장값(pkl). '
-                    f'현재 데이터 재예측: R² {r2:.3f} · MAE {mae/1000:.1f}K.</div>',
-                    unsafe_allow_html=True)
-            elif not used_pkl:
-                st.markdown(
-                    '<div class="caption" style="margin-top:12px">⚠️ pkl 피처와 불일치하여 동일 피처로 Ridge를 재학습했습니다.</div>',
-                    unsafe_allow_html=True)
-
-            st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
-
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=monthly["연월"], y=y,     name="실측",
-                                     line=dict(color=TOK["ink"], width=1.8)))
-            fig.add_trace(go.Scatter(x=monthly["연월"], y=preds, name="예측",
-                                     line=dict(color=TOK["primary"], width=2.4)))
-            fig.update_layout(title="실측 vs 예측")
-            style_fig(fig)
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        except Exception as e:
-            st.markdown(f'<div class="caption">예측 오류 — {e}</div>', unsafe_allow_html=True)
+    # 피처 중요도 Top 15
+    st.markdown('<h2 class="h-section" style="margin-top:32px">변수 중요도 (RandomForest)</h2>', unsafe_allow_html=True)
+    imp = (pd.DataFrame({"변수": bundle["names"], "중요도": model.named_steps["rf"].feature_importances_})
+           .sort_values("중요도").tail(15))
+    figi = go.Figure(go.Bar(x=imp["중요도"], y=imp["변수"], orientation="h",
+                            marker_color=TOK["primary"]))
+    figi.update_layout(title="상위 15개 변수 기여도", height=480)
+    style_fig(figi)
+    st.plotly_chart(figi, use_container_width=True, config={"displayModeBar": False})
     tile_close()
 
 
 elif page == "예측 시뮬레이터":
     tile_open("dark", anchor="simulator")
-    st.markdown("""
+    st.markdown(f"""
     <h2 class="h-display" style="color:var(--on-dark)">입력을 바꾸면, 예측이 즉시.</h2>
-    <p class="lead lead-on-dark">시설 규모와 검색량을 조정하면 사전학습 모델이 월 이용객을 다시 추정합니다.</p>
+    <p class="lead lead-on-dark">공원과 시설·검색량을 조정하면 RandomForest가 월 이용객을 다시 추정합니다.</p>
     """, unsafe_allow_html=True)
     tile_close()
 
     tile_open("light")
-    if pkl_model is None or not pkl_features:
-        st.markdown('<div class="card">모델(pkl) 또는 피처 정보가 없어 시뮬레이터를 사용할 수 없습니다.</div>',
+    model = bundle["model"]
+    sim_cols = [c for c in feature_cols if c not in ("월sin", "월cos")]  # 계절성은 월 선택으로 처리
+
+    st.markdown('<h2 class="h-section">입력 값 조정</h2>', unsafe_allow_html=True)
+    top = st.columns(2, gap="large")
+    sim_park = top[0].selectbox("공원", park_list,
+                                index=(park_list.index(selected_park) if selected_park in park_list else 0))
+    sim_month = top[1].slider("월", 1, 12, 6)
+    st.markdown('<div class="caption" style="margin:6px 0 16px 0">시설/검색량 기본값은 해당 공원의 중앙값입니다.</div>',
+                unsafe_allow_html=True)
+
+    park_rows = pm[pm["공원명"] == sim_park]
+    scols = st.columns(2, gap="large")
+    vals = {}
+    for i, c in enumerate(sim_cols):
+        s = park_rows[c] if len(park_rows) else pm[c]
+        lo, hi, med = float(s.min()), float(s.max()), float(s.median())
+        if hi <= lo:
+            hi = lo + 1.0
+        step = max((hi - lo) / 100.0, 0.1)
+        with scols[i % 2]:
+            vals[c] = st.slider(c, lo, hi, med, step=step)
+
+    row = dict(vals)
+    row["월sin"] = float(np.sin(2 * np.pi * sim_month / 12))
+    row["월cos"] = float(np.cos(2 * np.pi * sim_month / 12))
+    row["공원명"] = sim_park
+    Xrow = pd.DataFrame([[row[c] for c in feature_cols] + [sim_park]], columns=feature_cols + ["공원명"])
+
+    try:
+        pred = float(model.predict(Xrow)[0])
+    except Exception as e:
+        pred = None
+        st.markdown(f'<div class="caption">예측 오류 — {e}</div>', unsafe_allow_html=True)
+
+    if pred is not None:
+        avg = float(park_rows["총이용객"].mean()) if len(park_rows) else float(pm["총이용객"].mean())
+        diff = (pred - avg) / avg * 100 if avg else 0.0
+        st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+        r1, r2 = st.columns(2, gap="medium")
+        r1.markdown(metric_card(f"{pred/1e4:,.1f}만 명", f"예측 이용객 ({sim_park} · {sim_month}월)",
+                                delta=f"{'+' if diff >= 0 else ''}{diff:.1f}% vs 공원 평균"),
                     unsafe_allow_html=True)
-    else:
-        X_sim, y_sim, sim_cols = get_Xy(monthly)
-
-        st.markdown('<h2 class="h-section">입력 값 조정</h2>', unsafe_allow_html=True)
-        st.markdown('<div class="caption" style="margin-bottom:18px">'
-                    '기본값은 각 변수의 월별 중앙값입니다. 슬라이더를 움직이면 예측이 즉시 갱신됩니다.</div>',
+        r2.markdown(metric_card(f"{avg/1e4:,.1f}만 명", f"{sim_park} 평균 (실측)"),
                     unsafe_allow_html=True)
 
-        scols = st.columns(2, gap="large")
-        vals = {}
-        for i, c in enumerate(sim_cols):
-            s = X_sim[c]
-            lo, hi, med = float(s.min()), float(s.max()), float(s.median())
-            if hi <= lo:
-                hi = lo + 1.0
-            step = max((hi - lo) / 100.0, 1.0)
-            with scols[i % 2]:
-                vals[c] = st.slider(c, lo, hi, med, step=step)
-
-        Xrow = pd.DataFrame([[vals[c] for c in sim_cols]], columns=sim_cols)
-        try:
-            pred = float(pkl_model.predict(pkl_scaler.transform(Xrow))[0])
-        except Exception as e:
-            pred = None
-            st.markdown(f'<div class="caption">예측 오류 — {e}</div>', unsafe_allow_html=True)
-
-        if pred is not None:
-            avg = float(np.mean(y_sim))
-            diff = (pred - avg) / avg * 100 if avg else 0.0
-
-            st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
-            r1, r2 = st.columns(2, gap="medium")
-            r1.markdown(metric_card(f"{pred/1e4:,.1f}만 명", "예측 월 이용객",
-                                    delta=f"{'+' if diff >= 0 else ''}{diff:.1f}% vs 평균"),
-                        unsafe_allow_html=True)
-            r2.markdown(metric_card(f"{avg/1e4:,.1f}만 명", "전체 월평균 (실측)"),
-                        unsafe_allow_html=True)
-
-            st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
-            fig = go.Figure(go.Bar(
-                x=["예측값", "전체 평균"], y=[pred, avg],
-                marker_color=[TOK["primary"], TOK["ink_48"]],
-                text=[f"{pred/1e4:.1f}만", f"{avg/1e4:.1f}만"], textposition="outside",
-                width=[0.5, 0.5]))
-            fig.update_layout(title="예측 vs 실측 월평균", height=360, yaxis_title="월 이용객 수")
-            style_fig(fig)
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
+        fig = go.Figure(go.Bar(
+            x=["예측값", "공원 평균"], y=[pred, avg],
+            marker_color=[TOK["primary"], TOK["ink_48"]],
+            text=[f"{pred/1e4:.1f}만", f"{avg/1e4:.1f}만"], textposition="outside", width=[0.5, 0.5]))
+        fig.update_layout(title="예측 vs 공원 실측 평균", height=360, yaxis_title="월 이용객 수")
+        style_fig(fig)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     tile_close()
 
 
@@ -1183,14 +1155,9 @@ elif page == "잔차 진단":
 
     try:
         from scipy.stats import probplot
-        from sklearn.linear_model import Ridge
-        from sklearn.preprocessing import StandardScaler
 
-        X, y, _ = get_Xy(monthly)
-        scaler = StandardScaler().fit(X)
-        model = Ridge(alpha=1.0).fit(scaler.transform(X), y)
-        preds = model.predict(scaler.transform(X))
-        resid = y - preds
+        preds = bundle["oof"]                 # 폴드별 검증 예측 (전 815건)
+        resid = bundle["y"] - preds
 
         c1, c2 = st.columns(2, gap="medium")
 
@@ -1224,22 +1191,24 @@ elif page == "SHAP 해석":
 
     try:
         import shap
-        from sklearn.linear_model import Ridge
-        from sklearn.preprocessing import StandardScaler
 
-        X, y, _ = get_Xy(monthly)
-        scaler = StandardScaler().fit(X)
-        Xs = scaler.transform(X)
-        model = Ridge(alpha=1.0).fit(Xs, y)
-
-        explainer = shap.LinearExplainer(model, Xs)
-        sv = explainer.shap_values(Xs)
+        model = bundle["model"]
+        rf = model.named_steps["rf"]
+        pre = model.named_steps["pre"]
+        # 테스트셋 일부를 변환해 TreeExplainer 적용 (속도)
+        Xte_t = pre.transform(bundle["Xte"])
+        if hasattr(Xte_t, "toarray"):
+            Xte_t = Xte_t.toarray()
+        sample = Xte_t[:120]
+        explainer = shap.TreeExplainer(rf)
+        sv = explainer.shap_values(sample)
         mean_abs = np.abs(sv).mean(axis=0)
-        imp = pd.DataFrame({"변수": X.columns, "기여도": mean_abs}).sort_values("기여도", ascending=True)
+        imp = (pd.DataFrame({"변수": bundle["names"], "기여도": mean_abs})
+               .sort_values("기여도", ascending=True).tail(15))
 
         fig = px.bar(imp, x="기여도", y="변수", orientation="h")
         fig.update_traces(marker_color=TOK["primary"], marker_line_width=0)
-        fig.update_layout(title="전역 기여도 (평균 |SHAP|)", height=420)
+        fig.update_layout(title="전역 기여도 (평균 |SHAP|, 상위 15)", height=480)
         style_fig(fig)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     except Exception as e:
@@ -1259,43 +1228,40 @@ elif page == "Conformal":
     st.markdown('<h2 class="h-section">Conformal Prediction</h2>', unsafe_allow_html=True)
 
     try:
-        from sklearn.linear_model import Ridge
         from sklearn.model_selection import train_test_split
-        from sklearn.preprocessing import StandardScaler
 
         alpha = st.slider("유의수준 α", 0.05, 0.30, 0.10, 0.05,
                           help="1-α 가 커버리지 (예: α=0.10 → 90% 구간)")
 
-        X, y, _ = get_Xy(monthly)
-        idx = np.arange(len(y))
-        X_tr, X_cal, y_tr, y_cal, i_tr, i_cal = train_test_split(X, y, idx, test_size=0.3, random_state=42)
-        scaler = StandardScaler().fit(X_tr)
-        model = Ridge(alpha=1.0).fit(scaler.transform(X_tr), y_tr)
-        cal_preds = model.predict(scaler.transform(X_cal))
-        residuals = np.abs(y_cal - cal_preds)
-        q = np.quantile(residuals, 1 - alpha)
-        preds = model.predict(scaler.transform(X))
-        lower = preds - q
-        upper = preds + q
-        coverage = float(np.mean((y >= lower) & (y <= upper))) * 100
+        model = bundle["model"]
+        # 학습에 쓰지 않은 홀드아웃을 보정/검정으로 분할 (split conformal)
+        X_cal, X_tst, y_cal, y_tst = train_test_split(bundle["Xte"], bundle["yte"],
+                                                      test_size=0.5, random_state=1)
+        cal_pred = model.predict(X_cal)
+        q = float(np.quantile(np.abs(y_cal - cal_pred), 1 - alpha))
+        pred = model.predict(X_tst)
+        lower, upper = pred - q, pred + q
+        coverage = float(np.mean((y_tst >= lower) & (y_tst <= upper))) * 100
 
         c1, c2 = st.columns([1, 3], gap="medium")
         c1.markdown(metric_card(f"{coverage:.1f}%", "실측 커버리지", delta=f"+목표 {(1-alpha)*100:.0f}%"),
                     unsafe_allow_html=True)
 
         with c2:
-            order = np.argsort(monthly["연월"].values)
+            order = np.argsort(y_tst)
+            xi = np.arange(len(y_tst))
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=monthly["연월"].iloc[order], y=upper[order],
-                                     mode="lines", line=dict(color="rgba(0,102,204,0)"), showlegend=False))
-            fig.add_trace(go.Scatter(x=monthly["연월"].iloc[order], y=lower[order],
-                                     mode="lines", line=dict(color="rgba(0,102,204,0)"),
-                                     fill="tonexty", fillcolor="rgba(0,102,204,0.18)", name=f"{int((1-alpha)*100)}% 구간"))
-            fig.add_trace(go.Scatter(x=monthly["연월"].iloc[order], y=preds[order],
-                                     mode="lines", name="예측", line=dict(color=TOK["primary"], width=2.4)))
-            fig.add_trace(go.Scatter(x=monthly["연월"].iloc[order], y=y[order],
-                                     mode="markers", name="실측",
-                                     marker=dict(color=TOK["ink"], size=5)))
+            fig.add_trace(go.Scatter(x=xi, y=upper[order], mode="lines",
+                                     line=dict(color="rgba(0,102,204,0)"), showlegend=False))
+            fig.add_trace(go.Scatter(x=xi, y=lower[order], mode="lines",
+                                     line=dict(color="rgba(0,102,204,0)"),
+                                     fill="tonexty", fillcolor="rgba(0,102,204,0.18)",
+                                     name=f"{int((1-alpha)*100)}% 구간"))
+            fig.add_trace(go.Scatter(x=xi, y=pred[order], mode="lines",
+                                     name="예측", line=dict(color=TOK["primary"], width=2.0)))
+            fig.add_trace(go.Scatter(x=xi, y=np.asarray(y_tst)[order], mode="markers",
+                                     name="실측", marker=dict(color=TOK["ink"], size=5)))
+            fig.update_layout(title="예측 구간 (테스트셋, 실측 오름차순)", xaxis_title="표본", yaxis_title="이용객")
             style_fig(fig)
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     except Exception as e:
@@ -1308,40 +1274,35 @@ elif page == "Bootstrap CI":
     st.markdown('<h2 class="h-section">Bootstrap 95% 신뢰구간</h2>', unsafe_allow_html=True)
 
     try:
-        from sklearn.linear_model import Ridge
-        from sklearn.preprocessing import StandardScaler
+        from sklearn.metrics import r2_score, mean_absolute_error
 
-        n_boot = st.slider("Bootstrap 반복 수", 100, 1000, 300, 100)
+        n_boot = st.slider("Bootstrap 반복 수", 100, 2000, 500, 100)
 
-        X_df, y, names = get_Xy(monthly)
-        X = X_df.values
-        n = len(y)
+        yte = np.asarray(bundle["y"], dtype=float)
+        pred = np.asarray(bundle["oof"], dtype=float)   # 폴드별 검증 예측 (전 815건)
+        n = len(yte)
         rng = np.random.default_rng(7)
-        boot_coefs = []
+        r2s, maes = [], []
         for _ in range(n_boot):
-            samp = rng.integers(0, n, n)
-            sc = StandardScaler().fit(X[samp])
-            mdl = Ridge(alpha=1.0).fit(sc.transform(X[samp]), y[samp])
-            boot_coefs.append(mdl.coef_)
-        boot_coefs = np.array(boot_coefs)
-        lo = np.percentile(boot_coefs, 2.5, axis=0)
-        hi = np.percentile(boot_coefs, 97.5, axis=0)
-        mean = boot_coefs.mean(axis=0)
-        ci_df = pd.DataFrame({"변수": names, "평균계수": mean, "하한": lo, "상한": hi})
-        ci_df = ci_df.sort_values("평균계수")
+            s = rng.integers(0, n, n)
+            r2s.append(r2_score(yte[s], pred[s]))
+            maes.append(mean_absolute_error(yte[s], pred[s]))
+        r2s, maes = np.array(r2s), np.array(maes)
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=ci_df["평균계수"], y=ci_df["변수"],
-            error_x=dict(type="data", symmetric=False,
-                         array=ci_df["상한"] - ci_df["평균계수"],
-                         arrayminus=ci_df["평균계수"] - ci_df["하한"],
-                         color=TOK["ink_48"], thickness=1.5),
-            mode="markers", marker=dict(color=TOK["primary"], size=10),
-            name="95% CI",
-        ))
-        fig.add_vline(x=0, line=dict(color=TOK["ink"], dash="dot"))
-        fig.update_layout(title=f"Bootstrap 계수 분포 (n={n_boot})", height=480)
+        c1, c2 = st.columns(2, gap="medium")
+        c1.markdown(metric_card(f"{r2s.mean():.3f}", "Test R² (평균)",
+                                delta=f"+95% CI [{np.percentile(r2s,2.5):.3f}, {np.percentile(r2s,97.5):.3f}]"),
+                    unsafe_allow_html=True)
+        c2.markdown(metric_card(f"{maes.mean()/1000:.1f}K", "Test MAE (평균)",
+                                delta=f"+95% CI [{np.percentile(maes,2.5)/1000:.1f}K, {np.percentile(maes,97.5)/1000:.1f}K]"),
+                    unsafe_allow_html=True)
+
+        st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
+        fig = go.Figure(go.Histogram(x=r2s, nbinsx=40, marker_color=TOK["primary"]))
+        fig.add_vline(x=np.percentile(r2s, 2.5), line=dict(color=TOK["ink"], dash="dot"))
+        fig.add_vline(x=np.percentile(r2s, 97.5), line=dict(color=TOK["ink"], dash="dot"))
+        fig.update_layout(title=f"Bootstrap R² 분포 (n={n_boot}, 95% CI 점선)", height=420,
+                          xaxis_title="R²", yaxis_title="빈도")
         style_fig(fig)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     except Exception as e:
@@ -1353,53 +1314,58 @@ elif page == "Nested CV":
     tile_open("light", anchor="nested-cv")
     st.markdown('<h2 class="h-section">Nested Cross-Validation</h2>', unsafe_allow_html=True)
 
-    try:
-        from sklearn.linear_model import Ridge
-        from sklearn.metrics import r2_score
-        from sklearn.model_selection import KFold
-        from sklearn.preprocessing import StandardScaler
+    st.markdown('<div class="caption" style="margin-bottom:14px">'
+                'RandomForest의 max_depth를 내부 루프에서 튜닝하고, 외부 루프로 일반화 성능을 추정합니다. '
+                '(공원-월 815건)</div>', unsafe_allow_html=True)
+    outer_k = st.slider("Outer fold", 3, 7, 5)
+    inner_k = st.slider("Inner fold", 2, 5, 3)
 
-        outer_k = st.slider("Outer fold", 3, 7, 5)
-        inner_k = st.slider("Inner fold", 3, 5, 3)
-        alphas = [0.01, 0.1, 1.0, 10.0, 100.0]
+    if st.button("Nested CV 실행", type="primary"):
+        try:
+            from sklearn.ensemble import RandomForestRegressor
+            from sklearn.compose import ColumnTransformer
+            from sklearn.preprocessing import OneHotEncoder
+            from sklearn.pipeline import Pipeline
+            from sklearn.model_selection import KFold, GridSearchCV
+            from sklearn.metrics import r2_score
 
-        X_df, y, _ = get_Xy(monthly)
-        X = X_df.values
+            X, y = bundle["X"], bundle["y"]
 
-        outer = KFold(n_splits=outer_k, shuffle=True, random_state=42)
-        outer_scores, chosen = [], []
-        for tr, te in outer.split(X):
-            best_a, best_s = None, -np.inf
-            for a in alphas:
-                inner = KFold(n_splits=inner_k, shuffle=True, random_state=0)
-                s = []
-                for itr, iva in inner.split(X[tr]):
-                    sc = StandardScaler().fit(X[tr][itr])
-                    m = Ridge(alpha=a).fit(sc.transform(X[tr][itr]), y[tr][itr])
-                    s.append(r2_score(y[tr][iva], m.predict(sc.transform(X[tr][iva]))))
-                if np.mean(s) > best_s:
-                    best_s, best_a = float(np.mean(s)), a
-            chosen.append(best_a)
-            sc = StandardScaler().fit(X[tr])
-            m = Ridge(alpha=best_a).fit(sc.transform(X[tr]), y[tr])
-            outer_scores.append(r2_score(y[te], m.predict(sc.transform(X[te]))))
+            def make_pipe():
+                pre = ColumnTransformer([
+                    ("num", "passthrough", feature_cols),
+                    ("park", OneHotEncoder(handle_unknown="ignore"), ["공원명"])])
+                return Pipeline([("pre", pre),
+                                 ("rf", RandomForestRegressor(n_estimators=150, random_state=42, n_jobs=-1))])
 
-        c1, c2, c3 = st.columns(3, gap="medium")
-        c1.markdown(metric_card(f"{np.mean(outer_scores):.3f}", "평균 R² (외부)"),       unsafe_allow_html=True)
-        c2.markdown(metric_card(f"±{np.std(outer_scores):.3f}", "표준편차"),              unsafe_allow_html=True)
-        c3.markdown(metric_card(f"{np.median(chosen):.2f}",     "선택 α (median)"),       unsafe_allow_html=True)
+            grid = {"rf__max_depth": [None, 10, 20]}
+            outer = KFold(n_splits=outer_k, shuffle=True, random_state=42)
+            scores, chosen = [], []
+            with st.spinner(f"Nested CV 실행 중... (외부 {outer_k} × 내부 {inner_k})"):
+                for tr, te in outer.split(X):
+                    gs = GridSearchCV(make_pipe(), grid, cv=inner_k, scoring="r2", n_jobs=-1)
+                    gs.fit(X.iloc[tr], y[tr])
+                    scores.append(r2_score(y[te], gs.predict(X.iloc[te])))
+                    chosen.append(gs.best_params_["rf__max_depth"])
+            scores = np.array(scores)
 
-        st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
-        cv_df = pd.DataFrame({"Fold": list(range(1, outer_k + 1)),
-                              "R²": np.round(outer_scores, 4),
-                              "선택 α": chosen})
-        fig = px.bar(cv_df, x="Fold", y="R²", text="선택 α")
-        fig.update_traces(marker_color=TOK["primary"], marker_line_width=0,
-                          textposition="outside", textfont=dict(color=TOK["ink"]))
-        style_fig(fig)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    except Exception as e:
-        st.markdown(f'<div class="caption">Nested CV 오류 — {e}</div>', unsafe_allow_html=True)
+            c1, c2, c3 = st.columns(3, gap="medium")
+            c1.markdown(metric_card(f"{scores.mean():.3f}", "평균 R² (외부)"), unsafe_allow_html=True)
+            c2.markdown(metric_card(f"±{scores.std():.3f}", "표준편차"), unsafe_allow_html=True)
+            common = max(set(chosen), key=chosen.count)
+            c3.markdown(metric_card(str(common), "선택 max_depth (최빈)"), unsafe_allow_html=True)
+
+            st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
+            cv_df = pd.DataFrame({"Fold": list(range(1, outer_k + 1)),
+                                  "R²": np.round(scores, 4),
+                                  "선택 depth": [str(c) for c in chosen]})
+            fig = px.bar(cv_df, x="Fold", y="R²", text="선택 depth")
+            fig.update_traces(marker_color=TOK["primary"], marker_line_width=0,
+                              textposition="outside", textfont=dict(color=TOK["ink"]))
+            style_fig(fig)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        except Exception as e:
+            st.markdown(f'<div class="caption">Nested CV 오류 — {e}</div>', unsafe_allow_html=True)
     tile_close()
 
 
