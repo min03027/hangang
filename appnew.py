@@ -19,6 +19,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import folium
+from streamlit_folium import st_folium
 
 warnings.filterwarnings("ignore")
 
@@ -446,12 +448,16 @@ def load_pkl_model():
     model_dir = os.path.join(os.path.dirname(__file__), "model")
     pkl_files = glob.glob(os.path.join(model_dir, "*.pkl"))
     if not pkl_files:
-        return None, None, None, None
+        return None, None, None, None, {}
     with open(pkl_files[0], "rb") as f:
         obj = pickle.load(f)
     if isinstance(obj, dict):
-        return obj.get("model"), obj.get("scaler"), obj.get("features"), os.path.basename(pkl_files[0])
-    return obj, None, None, os.path.basename(pkl_files[0])
+        meta = {k: obj[k] for k in (
+            "best_alpha", "test_rmse", "test_mae", "test_r2",
+            "nested_cv_r2_mean", "nested_cv_r2_std",
+        ) if k in obj}
+        return obj.get("model"), obj.get("scaler"), obj.get("features"), os.path.basename(pkl_files[0]), meta
+    return obj, None, None, os.path.basename(pkl_files[0]), {}
 
 
 @st.cache_data
@@ -484,15 +490,27 @@ def load_data():
 
     df["연월"] = df["현황 일시"].dt.to_period("M")
     time_cols = ["일반이용자(아침)", "일반이용자(낮)", "일반이용자(저녁)"]
-    num_cols = [c for c in df.columns
-                if c not in ["공원명", "현황 일시", "연월"] and df[c].dtype != "O"]
-    for c in time_cols + num_cols:
+
+    # 피처에서 제외할 메타/ID/주소/일시 컬럼 (이름 기반 — pandas 3.0 string dtype 대응)
+    META_HINTS = ["일련번호", "코드", "주소", "시명", "구명", "등록", "수정", "일시"]
+    LEAK = set(time_cols) | {"총이용객", "월"}
+
+    def is_feature(col: str) -> bool:
+        if col in LEAK or col in ("공원명", "현황 일시", "연월", "계절", "검색량"):
+            return False
+        return not any(h in col for h in META_HINTS)
+
+    feature_cols = [c for c in df.columns if is_feature(c)]
+    # 시간대(누수) + 피처 컬럼을 숫자로 강제 변환
+    for c in time_cols + feature_cols:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     df["총이용객"] = df[time_cols].sum(axis=1)
 
-    monthly = df.groupby("연월")[["총이용객"] + time_cols + [c for c in num_cols if c not in time_cols]].mean(numeric_only=True).reset_index()
-    monthly["총이용객"] = df.groupby("연월")["총이용객"].sum().values
+    # 월별 집계: 시설/이용객은 모두 합계 (pkl 학습 파이프라인과 동일)
+    agg_cols = ["총이용객"] + [c for c in time_cols if c in df.columns] + feature_cols
+    agg_cols = list(dict.fromkeys(agg_cols))   # dedup, 순서 유지
+    monthly = df.groupby("연월")[agg_cols].sum().reset_index()
     monthly["연월"] = monthly["연월"].dt.to_timestamp()
     monthly["월"] = monthly["연월"].dt.month
 
@@ -500,14 +518,43 @@ def load_data():
         return "봄" if m in (3, 4, 5) else "여름" if m in (6, 7, 8) else "가을" if m in (9, 10, 11) else "겨울"
 
     monthly["계절"] = monthly["월"].apply(season)
-    monthly["검색량"] = monthly.get("한강공원", 0)
+
+    # 네이버 검색 트렌드 병합 → 검색량 (app.py와 동일 소스)
+    trend_path = os.path.join(data_dir, "trend.xlsx")
+    if os.path.exists(trend_path) and "한강공원" not in monthly.columns:
+        trend = pd.read_excel(trend_path).rename(columns={"날짜": "연월"})
+        trend["연월"] = pd.to_datetime(trend["연월"])
+        if "한강공원" in trend.columns:
+            tsub = trend[["연월", "한강공원"]].rename(columns={"한강공원": "검색량"})
+            monthly = pd.merge(monthly, tsub, on="연월", how="left")
+            monthly["검색량"] = monthly["검색량"].fillna(monthly["검색량"].median())
+    if "검색량" not in monthly.columns:
+        monthly["검색량"] = pd.to_numeric(monthly.get("한강공원", 0), errors="coerce").fillna(0)
+
+    # 모델링 피처 = 시설 피처 + 검색량 (ID/주소/시간대 누수 제외)
+    feat_final = [c for c in feature_cols if c in monthly.columns] + ["검색량"]
+    feat_final = list(dict.fromkeys(feat_final))
 
     park_list = df["공원명"].dropna().unique().tolist() if "공원명" in df.columns else []
-    return monthly, df, num_cols, time_cols, park_list
+    return monthly, df, feat_final, time_cols, park_list
 
 
-pkl_model, pkl_scaler, pkl_features, pkl_name = load_pkl_model()
+pkl_model, pkl_scaler, pkl_features, pkl_name, pkl_meta = load_pkl_model()
 monthly, raw_df, num_cols, time_cols, park_list = load_data()
+
+
+# ─────────────────────────────────────────────────────────────
+# 모델 입력 행렬 — pkl이 아는 피처만 사용 (없으면 정제된 전체 피처)
+# 누수(시간대)·ID 컬럼은 load_data 단계에서 이미 제외됨
+# ─────────────────────────────────────────────────────────────
+def get_Xy(df_monthly):
+    if pkl_features:
+        cols = [c for c in pkl_features if c in df_monthly.columns]
+    else:
+        cols = [c for c in num_cols if c in df_monthly.columns]
+    X = df_monthly[cols].astype(float).fillna(0)
+    y = df_monthly["총이용객"].values
+    return X, y, cols
 
 
 # ─────────────────────────────────────────────────────────────
@@ -616,10 +663,15 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    selected_park = (
-        st.selectbox("공원 선택", park_list, index=0) if park_list
-        else st.text_input("공원명", value="여의도")
-    )
+    # 지도 클릭 결과를 위젯 생성 '전'에 반영 (위젯 키는 생성 후 수정 불가)
+    if "_map_pick" in st.session_state:
+        st.session_state["selected_park"] = st.session_state.pop("_map_pick")
+
+    if park_list:
+        st.selectbox("공원 선택", park_list, index=0, key="selected_park")
+    else:
+        st.text_input("공원명", value="여의도", key="selected_park")
+    selected_park = st.session_state.get("selected_park")
 
     PAGES = [
         ("개요",            "spark"),
@@ -720,9 +772,69 @@ if page == "개요":
         st.markdown('<div style="height:20px"></div>', unsafe_allow_html=True)
     tile_close()
 
-    # Parchment tile — sample chart
+    # 지도 목업: 각 공원 마커를 찍고 클릭으로 선택하도록 함
+    parks = {
+        "강서한강공원":   [37.588, 126.815],
+        "양화한강공원":   [37.543, 126.901],
+        "난지한강공원":   [37.568, 126.876],
+        "망원한강공원":   [37.555, 126.897],
+        "여의도한강공원": [37.528, 126.932],
+        "이촌한강공원":   [37.517, 126.973],
+        "반포한강공원":   [37.510, 126.995],
+        "잠원한강공원":   [37.519, 127.011],
+        "잠실한강공원":   [37.520, 127.086],
+        "뚝섬한강공원":   [37.529, 127.072],
+        "광나루한강공원": [37.548, 127.118],
+    }
+
+    # Center map roughly on Seoul
+    m = folium.Map(location=[37.53, 126.98], zoom_start=12, tiles="CartoDB positron")
+    for name, coord in parks.items():
+        is_sel = (name == selected_park)
+        folium.Marker(
+            location=coord, tooltip=name, popup=name,
+            icon=folium.Icon(color="red" if is_sel else "blue",
+                             icon="star" if is_sel else "info-sign"),
+        ).add_to(m)
+
+    st.markdown('<h3 class="h-section">공원 위치 (지도에서 마커를 클릭하여 선택)</h3>', unsafe_allow_html=True)
+    map_data = st_folium(m, width=1100, height=480, key="overview_map")
+    st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
+    with st.expander("데이터 요약 및 검증"):
+        try:
+            st.write(f"원본 행 수: {len(raw_df)}")
+            st.write(f"월별 집계 행 수: {monthly.shape[0]}")
+            st.write(f"월별 총이용객 합계 (monthly): {int(monthly['총이용객'].sum())}")
+            if '총이용객' in raw_df.columns:
+                st.write(f"원본 총이용객 합계 (raw): {int(raw_df['총이용객'].sum())}")
+                grp = raw_df.groupby('연월')['총이용객'].sum()
+                st.write(f"원본으로 연월별 그룹핑 후 합계 합: {int(grp.sum())}")
+                st.write(f"집계 검증 차이 (monthly.sum - raw_group_sum): {int(monthly['총이용객'].sum() - grp.sum())}")
+        except Exception as e:
+            st.write("데이터 요약을 계산하는 동안 오류가 발생했습니다:", e)
+
+    # 마커(또는 지도)를 클릭하면 가장 가까운 공원을 선택 → 다음 run에서 사이드바에 반영
+    clicked_latlon = None
+    if map_data:
+        obj = map_data.get("last_object_clicked")
+        if obj:
+            clicked_latlon = (obj["lat"], obj["lng"])
+        elif map_data.get("last_clicked"):
+            clicked_latlon = (map_data["last_clicked"]["lat"], map_data["last_clicked"]["lng"])
+
+    if clicked_latlon is not None:
+        import math
+        nearest = min(parks.items(),
+                      key=lambda kv: math.hypot(clicked_latlon[0]-kv[1][0],
+                                                clicked_latlon[1]-kv[1][1]))[0]
+        if nearest != selected_park and nearest in (park_list or [nearest]):
+            # 위젯 키를 직접 수정하지 않고 pending 키에 저장 후 rerun
+            st.session_state["_map_pick"] = nearest
+            st.rerun()
+
+    # Parchment tile — 선택 공원 월별 추이
     tile_open("parchment", anchor="sample")
-    st.markdown('<h2 class="h-section">월별 이용객 추이</h2>', unsafe_allow_html=True)
+    st.markdown(f'<h2 class="h-section">월별 이용객 추이 · {selected_park or ""}</h2>', unsafe_allow_html=True)
     fig = px.line(monthly, x="연월", y="총이용객")
     fig.update_traces(line=dict(color=TOK["primary"], width=2.4))
     style_fig(fig)
@@ -834,28 +946,39 @@ elif page == "모델 예측":
             from sklearn.metrics import r2_score, mean_absolute_error
             from sklearn.preprocessing import StandardScaler
 
-            X = monthly.select_dtypes(include=[np.number]).drop(columns=["월", "총이용객"], errors="ignore").fillna(0)
-            y = monthly["총이용객"].values
+            X, y, used_cols = get_Xy(monthly)   # pkl이 아는 8개 피처 (검색량 포함)
 
-            try:
-                if pkl_scaler is not None:
-                    Xs = pkl_scaler.transform(X)
-                else:
-                    Xs = X.values
-                preds = pkl_model.predict(Xs)
-            except Exception:
-                # fall back to a quick Ridge fit so the dashboard remains usable
+            if pkl_scaler is not None and pkl_features and len(used_cols) == len(pkl_features):
+                preds = pkl_model.predict(pkl_scaler.transform(X))
+                used_pkl = True
+            else:
+                # pkl을 쓸 수 없을 때만 동일 피처로 Ridge 재학습 (누수 컬럼 없음)
                 scaler = StandardScaler().fit(X)
-                model = Ridge(alpha=1.0).fit(scaler.transform(X), y)
-                preds = model.predict(scaler.transform(X))
+                preds = Ridge(alpha=1.0).fit(scaler.transform(X), y).predict(scaler.transform(X))
+                used_pkl = False
 
+            # 현재 데이터 재계산 지표 (학습 데이터 포함 → 낙관적일 수 있음)
             r2  = r2_score(y, preds)
             mae = mean_absolute_error(y, preds)
 
+            # 표시 지표: pkl 저장된 검증값 우선
+            disp_r2  = pkl_meta.get("test_r2",  r2)  if used_pkl else r2
+            disp_mae = pkl_meta.get("test_mae", mae) if used_pkl else mae
+
             c1, c2, c3 = st.columns(3, gap="medium")
-            c1.markdown(metric_card(f"{r2:.3f}",        "R²"),                          unsafe_allow_html=True)
-            c2.markdown(metric_card(f"{mae/1000:.1f}K", "MAE"),                          unsafe_allow_html=True)
-            c3.markdown(metric_card(pkl_name or "Ridge", "사용 모델"),                   unsafe_allow_html=True)
+            c1.markdown(metric_card(f"{disp_r2:.3f}",        "R²"),          unsafe_allow_html=True)
+            c2.markdown(metric_card(f"{disp_mae/1000:.1f}K", "MAE"),         unsafe_allow_html=True)
+            c3.markdown(metric_card(pkl_name or "Ridge",     "사용 모델"),   unsafe_allow_html=True)
+
+            if used_pkl and pkl_meta:
+                st.markdown(
+                    f'<div class="caption" style="margin-top:12px">검증셋 기준 저장값(pkl). '
+                    f'현재 데이터 재예측: R² {r2:.3f} · MAE {mae/1000:.1f}K.</div>',
+                    unsafe_allow_html=True)
+            elif not used_pkl:
+                st.markdown(
+                    '<div class="caption" style="margin-top:12px">⚠️ pkl 피처와 불일치하여 동일 피처로 Ridge를 재학습했습니다.</div>',
+                    unsafe_allow_html=True)
 
             st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
 
@@ -881,8 +1004,7 @@ elif page == "잔차 진단":
         from sklearn.linear_model import Ridge
         from sklearn.preprocessing import StandardScaler
 
-        X = monthly.select_dtypes(include=[np.number]).drop(columns=["월", "총이용객"], errors="ignore").fillna(0)
-        y = monthly["총이용객"].values
+        X, y, _ = get_Xy(monthly)
         scaler = StandardScaler().fit(X)
         model = Ridge(alpha=1.0).fit(scaler.transform(X), y)
         preds = model.predict(scaler.transform(X))
@@ -923,8 +1045,7 @@ elif page == "SHAP 해석":
         from sklearn.linear_model import Ridge
         from sklearn.preprocessing import StandardScaler
 
-        X = monthly.select_dtypes(include=[np.number]).drop(columns=["월", "총이용객"], errors="ignore").fillna(0)
-        y = monthly["총이용객"].values
+        X, y, _ = get_Xy(monthly)
         scaler = StandardScaler().fit(X)
         Xs = scaler.transform(X)
         model = Ridge(alpha=1.0).fit(Xs, y)
@@ -963,8 +1084,7 @@ elif page == "Conformal":
         alpha = st.slider("유의수준 α", 0.05, 0.30, 0.10, 0.05,
                           help="1-α 가 커버리지 (예: α=0.10 → 90% 구간)")
 
-        X = monthly.select_dtypes(include=[np.number]).drop(columns=["월", "총이용객"], errors="ignore").fillna(0)
-        y = monthly["총이용객"].values
+        X, y, _ = get_Xy(monthly)
         idx = np.arange(len(y))
         X_tr, X_cal, y_tr, y_cal, i_tr, i_cal = train_test_split(X, y, idx, test_size=0.3, random_state=42)
         scaler = StandardScaler().fit(X_tr)
@@ -1011,8 +1131,8 @@ elif page == "Bootstrap CI":
 
         n_boot = st.slider("Bootstrap 반복 수", 100, 1000, 300, 100)
 
-        X = monthly.select_dtypes(include=[np.number]).drop(columns=["월", "총이용객"], errors="ignore").fillna(0).values
-        y = monthly["총이용객"].values
+        X_df, y, names = get_Xy(monthly)
+        X = X_df.values
         n = len(y)
         rng = np.random.default_rng(7)
         boot_coefs = []
@@ -1022,8 +1142,6 @@ elif page == "Bootstrap CI":
             mdl = Ridge(alpha=1.0).fit(sc.transform(X[samp]), y[samp])
             boot_coefs.append(mdl.coef_)
         boot_coefs = np.array(boot_coefs)
-
-        names = monthly.select_dtypes(include=[np.number]).drop(columns=["월", "총이용객"], errors="ignore").columns.tolist()
         lo = np.percentile(boot_coefs, 2.5, axis=0)
         hi = np.percentile(boot_coefs, 97.5, axis=0)
         mean = boot_coefs.mean(axis=0)
@@ -1063,8 +1181,8 @@ elif page == "Nested CV":
         inner_k = st.slider("Inner fold", 3, 5, 3)
         alphas = [0.01, 0.1, 1.0, 10.0, 100.0]
 
-        X = monthly.select_dtypes(include=[np.number]).drop(columns=["월", "총이용객"], errors="ignore").fillna(0).values
-        y = monthly["총이용객"].values
+        X_df, y, _ = get_Xy(monthly)
+        X = X_df.values
 
         outer = KFold(n_splits=outer_k, shuffle=True, random_state=42)
         outer_scores, chosen = [], []
