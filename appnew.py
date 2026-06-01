@@ -112,9 +112,18 @@ html, body, [class*="css"]  {{
   background: var(--parchment);
 }}
 
-#MainMenu, footer, header[data-testid="stHeader"] {{
+#MainMenu, footer {{
   visibility: hidden;
   height: 0;
+}}
+/* 헤더 바는 투명 처리하되 제거하지 않음 → 사이드바 펼침 토글이 항상 살아있음 */
+header[data-testid="stHeader"] {{
+  background: transparent;
+}}
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"] {{
+  display: flex !important;
+  visibility: visible !important;
 }}
 
 .block-container {{
