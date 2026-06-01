@@ -631,6 +631,28 @@ def tile_close() -> None:
     st.markdown('</div></section>', unsafe_allow_html=True)
 
 
+# 공원 좌표 (사이드바 미니 지도 + 개요 큰 지도 공용)
+PARK_COORDS = {
+    "강서한강공원":   [37.588, 126.815],
+    "양화한강공원":   [37.543, 126.901],
+    "난지한강공원":   [37.568, 126.876],
+    "망원한강공원":   [37.555, 126.897],
+    "여의도한강공원": [37.528, 126.932],
+    "이촌한강공원":   [37.517, 126.973],
+    "반포한강공원":   [37.510, 126.995],
+    "잠원한강공원":   [37.519, 127.011],
+    "잠실한강공원":   [37.520, 127.086],
+    "뚝섬한강공원":   [37.529, 127.072],
+    "광나루한강공원": [37.548, 127.118],
+}
+
+
+def nearest_park(lat: float, lng: float) -> str:
+    import math
+    return min(PARK_COORDS.items(),
+               key=lambda kv: math.hypot(lat - kv[1][0], lng - kv[1][1]))[0]
+
+
 def metric_card(num: str, label: str, delta: str | None = None, *, dark: bool = False) -> str:
     klass = "card card-dark" if dark else "card"
     delta_html = ""
@@ -663,28 +685,56 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    # 지도 클릭 결과를 위젯 생성 '전'에 반영 (위젯 키는 생성 후 수정 불가)
+    # 지도/네비 클릭 결과를 위젯 생성 '전'에 반영 (위젯 키는 생성 후 수정 불가)
     if "_map_pick" in st.session_state:
         st.session_state["selected_park"] = st.session_state.pop("_map_pick")
+    if "_nav" in st.session_state:
+        st.session_state["page"] = st.session_state.pop("_nav")
 
     if park_list:
-        st.selectbox("공원 선택", park_list, index=0, key="selected_park")
+        st.selectbox("공원 선택", park_list, key="selected_park")
     else:
         st.text_input("공원명", value="여의도", key="selected_park")
     selected_park = st.session_state.get("selected_park")
+
+    # 미니 지도 — 모든 페이지에서 공원 선택 가능
+    _mini = folium.Map(location=[37.53, 126.98], zoom_start=10,
+                       tiles="CartoDB positron", zoom_control=False,
+                       scrollWheelZoom=False, dragging=False)
+    for _n, _c in PARK_COORDS.items():
+        _s = (_n == selected_park)
+        folium.CircleMarker(
+            location=_c, radius=7 if _s else 4,
+            color="#E8505B" if _s else "#0066cc",
+            weight=2, fill=True,
+            fill_color="#E8505B" if _s else "#0066cc", fill_opacity=0.95,
+            tooltip=_n, popup=_n,
+        ).add_to(_mini)
+    _md = st_folium(_mini, width=280, height=200, key="mini_map")
+    if _md:
+        _o = _md.get("last_object_clicked") or _md.get("last_clicked")
+        if _o:
+            _np = nearest_park(_o["lat"], _o["lng"])
+            if _np != selected_park and _np in (park_list or [_np]):
+                st.session_state["_map_pick"] = _np
+                st.rerun()
+    st.markdown(f'<div class="caption" style="margin:-6px 0 10px 0">선택: '
+                f'<b style="color:var(--primary)">{selected_park or "-"}</b></div>',
+                unsafe_allow_html=True)
 
     PAGES = [
         ("개요",            "spark"),
         ("EDA",            "chart"),
         ("t-test & VIF",   "scatter"),
         ("모델 예측",       "model"),
+        ("예측 시뮬레이터",  "boot"),
         ("잔차 진단",       "diag"),
         ("SHAP 해석",       "shap"),
         ("Conformal",      "interval"),
         ("Bootstrap CI",   "boot"),
         ("Nested CV",      "cv"),
     ]
-    page = st.radio("분석", [p[0] for p in PAGES], index=0, label_visibility="visible")
+    page = st.radio("분석", [p[0] for p in PAGES], key="page", label_visibility="visible")
 
     st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
     st.markdown(f"""
@@ -708,21 +758,8 @@ render_sub_nav(f"한강공원 · {selected_park}" if selected_park else "한강�
 # 지도 — 페이지 최상단 (히어로 바로 위). 개요 페이지에서만 표시
 # ─────────────────────────────────────────────────────────────
 if page == "개요":
-    _parks = {
-        "강서한강공원":   [37.588, 126.815],
-        "양화한강공원":   [37.543, 126.901],
-        "난지한강공원":   [37.568, 126.876],
-        "망원한강공원":   [37.555, 126.897],
-        "여의도한강공원": [37.528, 126.932],
-        "이촌한강공원":   [37.517, 126.973],
-        "반포한강공원":   [37.510, 126.995],
-        "잠원한강공원":   [37.519, 127.011],
-        "잠실한강공원":   [37.520, 127.086],
-        "뚝섬한강공원":   [37.529, 127.072],
-        "광나루한강공원": [37.548, 127.118],
-    }
     _m = folium.Map(location=[37.53, 126.98], zoom_start=12, tiles="CartoDB positron")
-    for _name, _coord in _parks.items():
+    for _name, _coord in PARK_COORDS.items():
         _sel = (_name == selected_park)
         folium.Marker(
             location=_coord, tooltip=_name, popup=_name,
@@ -739,15 +776,11 @@ if page == "개요":
     # 마커 클릭 → 가장 가까운 공원 선택 → 다음 run 에서 사이드바에 반영
     _click = None
     if _map_data:
-        _obj = _map_data.get("last_object_clicked")
+        _obj = _map_data.get("last_object_clicked") or _map_data.get("last_clicked")
         if _obj:
             _click = (_obj["lat"], _obj["lng"])
-        elif _map_data.get("last_clicked"):
-            _click = (_map_data["last_clicked"]["lat"], _map_data["last_clicked"]["lng"])
     if _click is not None:
-        import math
-        _near = min(_parks.items(),
-                    key=lambda kv: math.hypot(_click[0]-kv[1][0], _click[1]-kv[1][1]))[0]
+        _near = nearest_park(_click[0], _click[1])
         if _near != selected_park and _near in (park_list or [_near]):
             st.session_state["_map_pick"] = _near
             st.rerun()
@@ -757,14 +790,23 @@ if page == "개요":
 # Hero tile — light
 # ─────────────────────────────────────────────────────────────
 tile_open("light", anchor="overview")
-st.markdown(f"""
+st.markdown("""
 <h1 class="h-hero">한강공원 이용객을, 데이터로.</h1>
 <p class="lead">EDA부터 SHAP, Conformal, Bootstrap, Nested CV까지 — 하나의 워크플로우.</p>
-<div style="margin-top: 32px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
-  <a class="pill" href="#start">모델 실행하기</a>
-  <a class="pill-ghost" href="#features">기능 살펴보기</a>
-</div>
 """, unsafe_allow_html=True)
+
+# 히어로 CTA — 실제 페이지 이동
+if page == "개요":
+    st.markdown('<div style="height:20px"></div>', unsafe_allow_html=True)
+    _b = st.columns([3, 1.3, 1.3, 3])
+    with _b[1]:
+        if st.button("모델 실행하기", key="hero_to_sim", use_container_width=True):
+            st.session_state["_nav"] = "예측 시뮬레이터"
+            st.rerun()
+    with _b[2]:
+        if st.button("기능 살펴보기", key="hero_to_eda", use_container_width=True):
+            st.session_state["_nav"] = "EDA"
+            st.rerun()
 
 # Top metric row
 if len(monthly) > 0:
@@ -837,12 +879,31 @@ if page == "개요":
 
     # Parchment tile — 선택 공원 월별 추이
     tile_open("parchment", anchor="sample")
-    st.markdown(f'<h2 class="h-section">월별 이용객 추이 · {selected_park or ""}</h2>', unsafe_allow_html=True)
+    st.markdown('<h2 class="h-section">월별 이용객 추이 (전체 합계)</h2>', unsafe_allow_html=True)
     fig = px.line(monthly, x="연월", y="총이용객")
     fig.update_traces(line=dict(color=TOK["primary"], width=2.4))
     style_fig(fig)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     tile_close()
+
+    # Light tile — 공원별 평균 이용객 랭킹 (선택 공원 강조)
+    if "공원명" in raw_df.columns and "총이용객" in raw_df.columns:
+        tile_open("light")
+        st.markdown('<h2 class="h-section">공원별 평균 이용객</h2>', unsafe_allow_html=True)
+        rank = (raw_df.groupby("공원명")["총이용객"].mean()
+                .sort_values().reset_index())
+        bar_colors = [("#E8505B" if p == selected_park else TOK["primary"])
+                      for p in rank["공원명"]]
+        figr = go.Figure(go.Bar(
+            x=rank["총이용객"], y=rank["공원명"], orientation="h",
+            marker_color=bar_colors,
+            text=[f"{v/1e4:.0f}만" for v in rank["총이용객"]], textposition="outside"))
+        figr.update_layout(height=460,
+                           title=f"빨강 = 선택 공원 ({selected_park})",
+                           xaxis_title="월평균 이용객 수")
+        style_fig(figr)
+        st.plotly_chart(figr, use_container_width=True, config={"displayModeBar": False})
+        tile_close()
 
 
 elif page == "EDA":
@@ -995,6 +1056,68 @@ elif page == "모델 예측":
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         except Exception as e:
             st.markdown(f'<div class="caption">예측 오류 — {e}</div>', unsafe_allow_html=True)
+    tile_close()
+
+
+elif page == "예측 시뮬레이터":
+    tile_open("dark", anchor="simulator")
+    st.markdown("""
+    <h2 class="h-display" style="color:var(--on-dark)">입력을 바꾸면, 예측이 즉시.</h2>
+    <p class="lead lead-on-dark">시설 규모와 검색량을 조정하면 사전학습 모델이 월 이용객을 다시 추정합니다.</p>
+    """, unsafe_allow_html=True)
+    tile_close()
+
+    tile_open("light")
+    if pkl_model is None or not pkl_features:
+        st.markdown('<div class="card">모델(pkl) 또는 피처 정보가 없어 시뮬레이터를 사용할 수 없습니다.</div>',
+                    unsafe_allow_html=True)
+    else:
+        X_sim, y_sim, sim_cols = get_Xy(monthly)
+
+        st.markdown('<h2 class="h-section">입력 값 조정</h2>', unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin-bottom:18px">'
+                    '기본값은 각 변수의 월별 중앙값입니다. 슬라이더를 움직이면 예측이 즉시 갱신됩니다.</div>',
+                    unsafe_allow_html=True)
+
+        scols = st.columns(2, gap="large")
+        vals = {}
+        for i, c in enumerate(sim_cols):
+            s = X_sim[c]
+            lo, hi, med = float(s.min()), float(s.max()), float(s.median())
+            if hi <= lo:
+                hi = lo + 1.0
+            step = max((hi - lo) / 100.0, 1.0)
+            with scols[i % 2]:
+                vals[c] = st.slider(c, lo, hi, med, step=step)
+
+        Xrow = pd.DataFrame([[vals[c] for c in sim_cols]], columns=sim_cols)
+        try:
+            pred = float(pkl_model.predict(pkl_scaler.transform(Xrow))[0])
+        except Exception as e:
+            pred = None
+            st.markdown(f'<div class="caption">예측 오류 — {e}</div>', unsafe_allow_html=True)
+
+        if pred is not None:
+            avg = float(np.mean(y_sim))
+            diff = (pred - avg) / avg * 100 if avg else 0.0
+
+            st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+            r1, r2 = st.columns(2, gap="medium")
+            r1.markdown(metric_card(f"{pred/1e4:,.1f}만 명", "예측 월 이용객",
+                                    delta=f"{'+' if diff >= 0 else ''}{diff:.1f}% vs 평균"),
+                        unsafe_allow_html=True)
+            r2.markdown(metric_card(f"{avg/1e4:,.1f}만 명", "전체 월평균 (실측)"),
+                        unsafe_allow_html=True)
+
+            st.markdown('<div style="height:16px"></div>', unsafe_allow_html=True)
+            fig = go.Figure(go.Bar(
+                x=["예측값", "전체 평균"], y=[pred, avg],
+                marker_color=[TOK["primary"], TOK["ink_48"]],
+                text=[f"{pred/1e4:.1f}만", f"{avg/1e4:.1f}만"], textposition="outside",
+                width=[0.5, 0.5]))
+            fig.update_layout(title="예측 vs 실측 월평균", height=360, yaxis_title="월 이용객 수")
+            style_fig(fig)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     tile_close()
 
 
