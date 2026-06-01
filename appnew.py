@@ -705,6 +705,55 @@ render_sub_nav(f"한강공원 · {selected_park}" if selected_park else "한강�
 
 
 # ─────────────────────────────────────────────────────────────
+# 지도 — 페이지 최상단 (히어로 바로 위). 개요 페이지에서만 표시
+# ─────────────────────────────────────────────────────────────
+if page == "개요":
+    _parks = {
+        "강서한강공원":   [37.588, 126.815],
+        "양화한강공원":   [37.543, 126.901],
+        "난지한강공원":   [37.568, 126.876],
+        "망원한강공원":   [37.555, 126.897],
+        "여의도한강공원": [37.528, 126.932],
+        "이촌한강공원":   [37.517, 126.973],
+        "반포한강공원":   [37.510, 126.995],
+        "잠원한강공원":   [37.519, 127.011],
+        "잠실한강공원":   [37.520, 127.086],
+        "뚝섬한강공원":   [37.529, 127.072],
+        "광나루한강공원": [37.548, 127.118],
+    }
+    _m = folium.Map(location=[37.53, 126.98], zoom_start=12, tiles="CartoDB positron")
+    for _name, _coord in _parks.items():
+        _sel = (_name == selected_park)
+        folium.Marker(
+            location=_coord, tooltip=_name, popup=_name,
+            icon=folium.Icon(color="red" if _sel else "blue",
+                             icon="star" if _sel else "info-sign"),
+        ).add_to(_m)
+
+    tile_open("light")
+    st.markdown('<h2 class="h-section" style="text-align:center; margin-bottom:16px">'
+                '지도에서 공원을 선택하세요</h2>', unsafe_allow_html=True)
+    _map_data = st_folium(_m, width=1100, height=460, key="overview_map")
+    tile_close()
+
+    # 마커 클릭 → 가장 가까운 공원 선택 → 다음 run 에서 사이드바에 반영
+    _click = None
+    if _map_data:
+        _obj = _map_data.get("last_object_clicked")
+        if _obj:
+            _click = (_obj["lat"], _obj["lng"])
+        elif _map_data.get("last_clicked"):
+            _click = (_map_data["last_clicked"]["lat"], _map_data["last_clicked"]["lng"])
+    if _click is not None:
+        import math
+        _near = min(_parks.items(),
+                    key=lambda kv: math.hypot(_click[0]-kv[1][0], _click[1]-kv[1][1]))[0]
+        if _near != selected_park and _near in (park_list or [_near]):
+            st.session_state["_map_pick"] = _near
+            st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────
 # Hero tile — light
 # ─────────────────────────────────────────────────────────────
 tile_open("light", anchor="overview")
@@ -772,34 +821,7 @@ if page == "개요":
         st.markdown('<div style="height:20px"></div>', unsafe_allow_html=True)
     tile_close()
 
-    # 지도 목업: 각 공원 마커를 찍고 클릭으로 선택하도록 함
-    parks = {
-        "강서한강공원":   [37.588, 126.815],
-        "양화한강공원":   [37.543, 126.901],
-        "난지한강공원":   [37.568, 126.876],
-        "망원한강공원":   [37.555, 126.897],
-        "여의도한강공원": [37.528, 126.932],
-        "이촌한강공원":   [37.517, 126.973],
-        "반포한강공원":   [37.510, 126.995],
-        "잠원한강공원":   [37.519, 127.011],
-        "잠실한강공원":   [37.520, 127.086],
-        "뚝섬한강공원":   [37.529, 127.072],
-        "광나루한강공원": [37.548, 127.118],
-    }
-
-    # Center map roughly on Seoul
-    m = folium.Map(location=[37.53, 126.98], zoom_start=12, tiles="CartoDB positron")
-    for name, coord in parks.items():
-        is_sel = (name == selected_park)
-        folium.Marker(
-            location=coord, tooltip=name, popup=name,
-            icon=folium.Icon(color="red" if is_sel else "blue",
-                             icon="star" if is_sel else "info-sign"),
-        ).add_to(m)
-
-    st.markdown('<h3 class="h-section">공원 위치 (지도에서 마커를 클릭하여 선택)</h3>', unsafe_allow_html=True)
-    map_data = st_folium(m, width=1100, height=480, key="overview_map")
-    st.markdown('<div style="height:12px"></div>', unsafe_allow_html=True)
+    # 지도는 페이지 최상단(히어로 위)으로 이동됨. 여기서는 데이터 검증만.
     with st.expander("데이터 요약 및 검증"):
         try:
             st.write(f"원본 행 수: {len(raw_df)}")
@@ -812,25 +834,6 @@ if page == "개요":
                 st.write(f"집계 검증 차이 (monthly.sum - raw_group_sum): {int(monthly['총이용객'].sum() - grp.sum())}")
         except Exception as e:
             st.write("데이터 요약을 계산하는 동안 오류가 발생했습니다:", e)
-
-    # 마커(또는 지도)를 클릭하면 가장 가까운 공원을 선택 → 다음 run에서 사이드바에 반영
-    clicked_latlon = None
-    if map_data:
-        obj = map_data.get("last_object_clicked")
-        if obj:
-            clicked_latlon = (obj["lat"], obj["lng"])
-        elif map_data.get("last_clicked"):
-            clicked_latlon = (map_data["last_clicked"]["lat"], map_data["last_clicked"]["lng"])
-
-    if clicked_latlon is not None:
-        import math
-        nearest = min(parks.items(),
-                      key=lambda kv: math.hypot(clicked_latlon[0]-kv[1][0],
-                                                clicked_latlon[1]-kv[1][1]))[0]
-        if nearest != selected_park and nearest in (park_list or [nearest]):
-            # 위젯 키를 직접 수정하지 않고 pending 키에 저장 후 rerun
-            st.session_state["_map_pick"] = nearest
-            st.rerun()
 
     # Parchment tile — 선택 공원 월별 추이
     tile_open("parchment", anchor="sample")
