@@ -653,6 +653,49 @@ def nearest_park(lat: float, lng: float) -> str:
                key=lambda kv: math.hypot(lat - kv[1][0], lng - kv[1][1]))[0]
 
 
+# ─────────────────────────────────────────────────────────────
+# 데모(합성) 데이터 — 실측이 아니라 파이프라인 시연용
+#   · 실제 피처 분포를 샘플링 + 타깃을 pkl 관계 + 소량 노이즈로 생성
+#   · 따라서 모델/잔차/구간/CV 가 일관되게 깔끔히 나옴 (성능은 데모값)
+# ─────────────────────────────────────────────────────────────
+def make_demo_data(real_monthly, n=180):
+    rs = np.random.RandomState(42)
+    feats = list(pkl_features)
+    base = real_monthly[feats].values
+    idx = rs.randint(0, len(base), n)
+    Xsyn = np.clip(base[idx] * (1 + rs.normal(0, 0.10, (n, len(feats)))), 0, None)
+    Xdf = pd.DataFrame(Xsyn, columns=feats)
+    yhat = pkl_model.predict(pkl_scaler.transform(Xdf))
+    y = np.clip(yhat + rs.normal(0, 0.25 * np.std(yhat), n), np.percentile(yhat, 2), None)
+
+    months = pd.date_range("2014-01-01", periods=n, freq="MS")
+    dm = Xdf.copy()
+    dm["총이용객"] = y
+    dm["연월"] = months
+    dm["월"] = months.month
+    dm["계절"] = dm["월"].map(lambda m: "봄" if m in (3, 4, 5) else "여름" if m in (6, 7, 8)
+                              else "가을" if m in (9, 10, 11) else "겨울")
+    dm["일반이용자(아침)"] = y * 0.25
+    dm["일반이용자(낮)"]   = y * 0.45
+    dm["일반이용자(저녁)"] = y * 0.30
+
+    parks = list(PARK_COORDS.keys())
+    w = rs.dirichlet(np.ones(len(parks)) * 3)
+    rows = []
+    for i, mo in enumerate(months):
+        for p, wp in zip(parks, w):
+            rows.append({"공원명": p, "현황 일시": mo, "연월": pd.Period(mo, "M"),
+                         "총이용객": float(y[i] * wp * (1 + rs.normal(0, 0.05)))})
+    raw = pd.DataFrame(rows)
+    return dm, raw, feats, ["일반이용자(아침)", "일반이용자(낮)", "일반이용자(저녁)"], parks
+
+
+DEMO_MODE = (bool(st.session_state.get("demo_mode", False))
+             and pkl_model is not None and bool(pkl_features))
+if DEMO_MODE:
+    monthly, raw_df, num_cols, time_cols, park_list = make_demo_data(monthly, n=180)
+
+
 def metric_card(num: str, label: str, delta: str | None = None, *, dark: bool = False) -> str:
     klass = "card card-dark" if dark else "card"
     delta_html = ""
@@ -684,6 +727,12 @@ with st.sidebar:
       </div>
     </div>
     """, unsafe_allow_html=True)
+
+    st.checkbox("데모(합성) 데이터", key="demo_mode",
+                help="실측 대신 합성 데이터로 파이프라인을 시연합니다. 표시되는 성능 지표는 데모용입니다.")
+    if DEMO_MODE:
+        st.markdown('<div class="caption" style="color:#E8505B; margin:-4px 0 8px 0">'
+                    '⚠️ 합성 데이터(데모) 표시 중</div>', unsafe_allow_html=True)
 
     # 지도/네비 클릭 결과를 위젯 생성 '전'에 반영 (위젯 키는 생성 후 수정 불가)
     if "_map_pick" in st.session_state:
@@ -1025,16 +1074,23 @@ elif page == "모델 예측":
             r2  = r2_score(y, preds)
             mae = mean_absolute_error(y, preds)
 
-            # 표시 지표: pkl 저장된 검증값 우선
-            disp_r2  = pkl_meta.get("test_r2",  r2)  if used_pkl else r2
-            disp_mae = pkl_meta.get("test_mae", mae) if used_pkl else mae
+            # 표시 지표: 데모면 현재 데이터 기준, 실측이면 pkl 저장 검증값 우선
+            if DEMO_MODE:
+                disp_r2, disp_mae = r2, mae
+            else:
+                disp_r2  = pkl_meta.get("test_r2",  r2)  if used_pkl else r2
+                disp_mae = pkl_meta.get("test_mae", mae) if used_pkl else mae
 
             c1, c2, c3 = st.columns(3, gap="medium")
             c1.markdown(metric_card(f"{disp_r2:.3f}",        "R²"),          unsafe_allow_html=True)
             c2.markdown(metric_card(f"{disp_mae/1000:.1f}K", "MAE"),         unsafe_allow_html=True)
             c3.markdown(metric_card(pkl_name or "Ridge",     "사용 모델"),   unsafe_allow_html=True)
 
-            if used_pkl and pkl_meta:
+            if DEMO_MODE:
+                st.markdown(
+                    '<div class="caption" style="margin-top:12px; color:#E8505B">⚠️ 합성 데이터(데모) 기준 지표입니다.</div>',
+                    unsafe_allow_html=True)
+            elif used_pkl and pkl_meta:
                 st.markdown(
                     f'<div class="caption" style="margin-top:12px">검증셋 기준 저장값(pkl). '
                     f'현재 데이터 재예측: R² {r2:.3f} · MAE {mae/1000:.1f}K.</div>',
