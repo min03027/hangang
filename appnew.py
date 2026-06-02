@@ -665,12 +665,7 @@ def render_global_nav() -> None:
     st.markdown(f"""
     <div class="global-nav">
       <div class="nav-links">
-        <a href="#overview">Overview</a>
-        <a href="#data">데이터</a>
-        <a href="#model">모델</a>
-        <a href="#interpret">해석</a>
-        <a href="#diagnostics">진단</a>
-        <a href="#uncertainty">불확실성</a>
+        <span style="font-weight:600; letter-spacing:-0.01em">데이터 분석 응용</span>
       </div>
       <div class="nav-links">
         <span title="한강공원" style="display:flex">{icon('wave', 16, TOK['on_dark'], TOK['primary_on_dark'])}</span>
@@ -854,14 +849,15 @@ def _hdr_pick_page():
 st.markdown("""
 <style>
 [class*="st-key-hdrcard"]{background:#fff;border:1px solid var(--hairline);border-radius:18px;
-  padding:16px 18px 12px 18px;height:100%;transition:border-color .14s,box-shadow .14s;}
+  padding:14px 18px;height:150px;display:flex;flex-direction:column;justify-content:space-between;
+  transition:border-color .14s,box-shadow .14s;}
 [class*="st-key-hdrcard"]:hover{border-color:var(--primary);box-shadow:var(--product-shadow);}
 [class*="st-key-hdrcard"] [data-baseweb="select"]>div{border:none!important;background:transparent!important;
   padding-left:0!important;box-shadow:none!important;}
-[class*="st-key-hdrcard"] [data-baseweb="select"] div[value],
-[class*="st-key-hdrcard"] [data-baseweb="select"]>div>div{font-size:24px!important;font-weight:600!important;
+[class*="st-key-hdrcard"] [data-baseweb="select"]>div>div{font-size:22px!important;font-weight:600!important;
   color:var(--ink)!important;letter-spacing:-0.02em;}
-[class*="st-key-hdrmap"]{border-radius:18px;overflow:hidden;border:1px solid var(--hairline);}
+[class*="st-key-hdrmap"]{height:150px;border-radius:18px;overflow:hidden;border:1px solid var(--hairline);}
+[class*="st-key-hdrmap"] iframe{height:150px!important;}
 </style>
 """, unsafe_allow_html=True)
 st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
@@ -883,7 +879,7 @@ with hcol[0]:
                                 color="#E8505B" if _s else "#0066cc", weight=2, fill=True,
                                 fill_color="#E8505B" if _s else "#0066cc", fill_opacity=0.95,
                                 tooltip=_n, popup=_n).add_to(_hm)
-        _hd = st_folium(_hm, height=176, use_container_width=True, key="header_map")
+        _hd = st_folium(_hm, height=150, use_container_width=True, key="header_map")
         if _hd:
             _o = _hd.get("last_object_clicked") or _hd.get("last_clicked")
             if _o:
