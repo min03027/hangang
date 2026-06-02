@@ -664,19 +664,14 @@ def render_sub_nav(category: str) -> None:
 
 
 def tile_open(kind: str = "light", anchor: str | None = None) -> None:
-    cls = {
-        "light":     "tile tile-light",
-        "parchment": "tile tile-parchment",
-        "dark":      "tile tile-dark",
-        "dark2":     "tile tile-dark-2",
-        "dark3":     "tile tile-dark-3",
-    }.get(kind, "tile tile-light")
+    # 과거 <section> 배경 타일은 Streamlit에서 내용을 못 감싸고 '빈 색상 박스'만 남겨
+    # 디자인을 해쳤음. → 배경 띠 없이 앵커 + 상단 여백만 두고 모든 콘텐츠는 단일 배경 위에 렌더.
     a = f' id="{anchor}"' if anchor else ""
-    st.markdown(f'<section{a} class="{cls}"><div class="tile-inner">', unsafe_allow_html=True)
+    st.markdown(f'<div{a} style="height:4px"></div>', unsafe_allow_html=True)
 
 
 def tile_close() -> None:
-    st.markdown('</div></section>', unsafe_allow_html=True)
+    st.markdown('<div style="height:40px"></div>', unsafe_allow_html=True)
 
 
 # 공원 좌표 (사이드바 미니 지도 + 개요 큰 지도 공용)
@@ -841,8 +836,10 @@ if page == "개요":
 # ─────────────────────────────────────────────────────────────
 tile_open("light", anchor="overview")
 st.markdown("""
-<h1 class="h-hero">한강공원 이용객을, 데이터로.</h1>
-<p class="lead">EDA부터 SHAP, Conformal, Bootstrap, Nested CV까지 — 하나의 워크플로우.</p>
+<div style="text-align:center; max-width:920px; margin:8px auto 0 auto">
+  <h1 class="h-hero">한강공원 이용객을, 데이터로.</h1>
+  <p class="lead">EDA부터 SHAP, Conformal, Bootstrap, Nested CV까지 — 하나의 워크플로우.</p>
+</div>
 """, unsafe_allow_html=True)
 
 # 히어로 CTA — 실제 페이지 이동
@@ -884,18 +881,18 @@ tile_close()
 
 if page == "개요":
     # Dark tile — features grid
-    tile_open("dark", anchor="features")
+    tile_open("light", anchor="features")
     st.markdown(f"""
-    <h2 class="h-display" style="color:var(--on-dark)">하나의 대시보드, 아홉 가지 분석.</h2>
-    <p class="lead lead-on-dark">카드를 누르면 해당 분석으로 바로 이동합니다.</p>
+    <h2 class="h-display" style="color:var(--ink)">하나의 대시보드, 아홉 가지 분석.</h2>
+    <p class="lead">카드를 누르면 해당 분석으로 바로 이동합니다.</p>
     """, unsafe_allow_html=True)
 
-    # 클릭 가능한 카드 스타일 (keyed container)
+    # 클릭 가능한 카드 스타일 (keyed container) — 라이트 카드
     st.markdown("""
     <style>
     [class*="st-key-navcard"] {
-      background: var(--tile2);
-      border: 1px solid rgba(255,255,255,0.08);
+      background: #ffffff;
+      border: 1px solid var(--hairline);
       border-radius: 18px;
       padding: 22px 22px 6px 22px;
       height: 100%;
@@ -903,14 +900,14 @@ if page == "개요":
     }
     [class*="st-key-navcard"]:hover {
       transform: translateY(-4px);
-      border-color: var(--primary-on-dark);
-      box-shadow: 0 12px 30px rgba(0,0,0,0.40);
+      border-color: var(--primary);
+      box-shadow: var(--product-shadow);
     }
     [class*="st-key-navcard"] .stButton > button {
       background: transparent !important;
-      color: var(--primary-on-dark) !important;
+      color: var(--primary) !important;
       border: none;
-      border-top: 1px solid rgba(255,255,255,0.08);
+      border-top: 1px solid var(--hairline);
       border-radius: 0;
       padding: 12px 0 6px 0;
       margin-top: 12px;
@@ -918,7 +915,7 @@ if page == "개요":
       font-weight: 600;
       justify-content: flex-start;
     }
-    [class*="st-key-navcard"] .stButton > button:hover { color: #fff !important; }
+    [class*="st-key-navcard"] .stButton > button:hover { color: var(--primary-focus) !important; }
     [class*="st-key-navcard"] .stButton > button:focus { outline: none; box-shadow: none; }
     </style>
     """, unsafe_allow_html=True)
@@ -942,9 +939,9 @@ if page == "개요":
             with cols[j]:
                 with st.container(key=f"navcard_{i}"):
                     st.markdown(
-                        f'<div style="margin-bottom:12px">{icon(ic, 26, TOK["on_dark"], TOK["primary_on_dark"])}</div>'
-                        f'<div class="body-strong" style="color:var(--on-dark)">{title}</div>'
-                        f'<div class="caption" style="color:var(--muted-dark); margin-top:6px; '
+                        f'<div style="margin-bottom:12px">{icon(ic, 26, TOK["ink"], TOK["primary"])}</div>'
+                        f'<div class="body-strong" style="color:var(--ink)">{title}</div>'
+                        f'<div class="caption" style="color:var(--ink-48); margin-top:6px; '
                         f'line-height:1.5; min-height:38px">{desc}</div>',
                         unsafe_allow_html=True)
                     if st.button("열기 →", key=f"nav_{i}", use_container_width=True):
@@ -1197,10 +1194,10 @@ elif page == "t-test & VIF":
 elif page == "모델 예측":
     from sklearn.metrics import r2_score, mean_absolute_error
 
-    tile_open("dark", anchor="model")
+    tile_open("light", anchor="model")
     st.markdown("""
-    <h2 class="h-display" style="color:var(--on-dark)">공원·월 단위로, 더 정교하게.</h2>
-    <p class="lead lead-on-dark">11개 공원 × 월별 815건을 RandomForest로 학습해 이용객을 예측합니다.</p>
+    <h2 class="h-display" style="color:var(--ink)">공원·월 단위로, 더 정교하게.</h2>
+    <p class="lead">11개 공원 × 월별 815건을 RandomForest로 학습해 이용객을 예측합니다.</p>
     """, unsafe_allow_html=True)
     tile_close()
 
@@ -1251,10 +1248,10 @@ elif page == "모델 예측":
 
 
 elif page == "예측 시뮬레이터":
-    tile_open("dark", anchor="simulator")
+    tile_open("light", anchor="simulator")
     st.markdown(f"""
-    <h2 class="h-display" style="color:var(--on-dark)">입력을 바꾸면, 예측이 즉시.</h2>
-    <p class="lead lead-on-dark">공원과 시설·검색량을 조정하면 RandomForest가 월 이용객을 다시 추정합니다.</p>
+    <h2 class="h-display" style="color:var(--ink)">입력을 바꾸면, 예측이 즉시.</h2>
+    <p class="lead">공원과 시설·검색량을 조정하면 RandomForest가 월 이용객을 다시 추정합니다.</p>
     """, unsafe_allow_html=True)
     tile_close()
 
@@ -1384,10 +1381,10 @@ elif page == "SHAP 해석":
 
 
 elif page == "Conformal":
-    tile_open("dark2", anchor="uncertainty")
+    tile_open("light", anchor="uncertainty")
     st.markdown(f"""
-    <h2 class="h-display" style="color:var(--on-dark)">분포 가정 없는 예측 구간.</h2>
-    <p class="lead lead-on-dark">Split Conformal로 보장된 커버리지를 — 단 하나의 캘리브레이션 단계로.</p>
+    <h2 class="h-display" style="color:var(--ink)">분포 가정 없는 예측 구간.</h2>
+    <p class="lead">Split Conformal로 보장된 커버리지를 — 단 하나의 캘리브레이션 단계로.</p>
     """, unsafe_allow_html=True)
     tile_close()
 
