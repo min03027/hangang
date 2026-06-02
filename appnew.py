@@ -832,33 +832,87 @@ if page == "개요":
             st.session_state["_nav"] = "EDA"
             st.rerun()
 
-# ── 헤더 행: 미니맵(2칸) + 선택 공원 + 현재 분석
-st.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
+# ── 헤더 행: 미니맵(2칸) + 공원/분석 선택 카드 (클릭 가능)
+PAGE_DESC = {
+    "개요": "전체 요약 · 한눈에 보기", "EDA": "탐색적 데이터 분석",
+    "t-test & VIF": "피처 선별 · 공선성", "모델 예측": "RandomForest 예측",
+    "예측 시뮬레이터": "입력 → 실시간 예측", "잔차 진단": "Q-Q · 정규성",
+    "SHAP 해석": "변수 기여도", "Conformal": "예측 구간",
+    "Bootstrap CI": "성능 신뢰구간", "Nested CV": "일반화 추정",
+    "신규 모델 (HSKR)": "HSKR vs Ridge",
+}
+
+
+def _hdr_pick_park():
+    st.session_state["_map_pick"] = st.session_state["hdr_park"]
+
+
+def _hdr_pick_page():
+    st.session_state["_nav"] = st.session_state["hdr_page"]
+
+
+st.markdown("""
+<style>
+[class*="st-key-hdrcard"]{background:#fff;border:1px solid var(--hairline);border-radius:18px;
+  padding:16px 18px 12px 18px;height:100%;transition:border-color .14s,box-shadow .14s;}
+[class*="st-key-hdrcard"]:hover{border-color:var(--primary);box-shadow:var(--product-shadow);}
+[class*="st-key-hdrcard"] [data-baseweb="select"]>div{border:none!important;background:transparent!important;
+  padding-left:0!important;box-shadow:none!important;}
+[class*="st-key-hdrcard"] [data-baseweb="select"] div[value],
+[class*="st-key-hdrcard"] [data-baseweb="select"]>div>div{font-size:24px!important;font-weight:600!important;
+  color:var(--ink)!important;letter-spacing:-0.02em;}
+[class*="st-key-hdrmap"]{border-radius:18px;overflow:hidden;border:1px solid var(--hairline);}
+</style>
+""", unsafe_allow_html=True)
+st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
+
+# 헤더 위젯 상태를 현재 선택과 동기화 (위젯 생성 전)
+if park_list and st.session_state.get("hdr_park") != selected_park:
+    st.session_state["hdr_park"] = selected_park if selected_park in park_list else park_list[0]
+if st.session_state.get("hdr_page") != page:
+    st.session_state["hdr_page"] = page
+
 hcol = st.columns([2, 1, 1], gap="medium")
 with hcol[0]:
-    _hm = folium.Map(location=[37.53, 126.98], zoom_start=11, tiles="CartoDB positron",
-                     zoom_control=False, scrollWheelZoom=False, dragging=False)
-    for _n, _c in PARK_COORDS.items():
-        _s = (_n == selected_park)
-        folium.CircleMarker(
-            location=_c, radius=8 if _s else 5,
-            color="#E8505B" if _s else "#0066cc", weight=2, fill=True,
-            fill_color="#E8505B" if _s else "#0066cc", fill_opacity=0.95,
-            tooltip=_n, popup=_n).add_to(_hm)
-    _hd = st_folium(_hm, height=200, use_container_width=True, key="header_map")
-    if _hd:
-        _o = _hd.get("last_object_clicked") or _hd.get("last_clicked")
-        if _o:
-            _np = nearest_park(_o["lat"], _o["lng"])
-            if _np != selected_park and _np in (park_list or [_np]):
-                st.session_state["_map_pick"] = _np
-                st.rerun()
+    with st.container(key="hdrmap"):
+        _hm = folium.Map(location=[37.53, 126.98], zoom_start=11, tiles="CartoDB positron",
+                         zoom_control=False, scrollWheelZoom=False, dragging=False)
+        for _n, _c in PARK_COORDS.items():
+            _s = (_n == selected_park)
+            folium.CircleMarker(location=_c, radius=8 if _s else 5,
+                                color="#E8505B" if _s else "#0066cc", weight=2, fill=True,
+                                fill_color="#E8505B" if _s else "#0066cc", fill_opacity=0.95,
+                                tooltip=_n, popup=_n).add_to(_hm)
+        _hd = st_folium(_hm, height=176, use_container_width=True, key="header_map")
+        if _hd:
+            _o = _hd.get("last_object_clicked") or _hd.get("last_clicked")
+            if _o:
+                _np = nearest_park(_o["lat"], _o["lng"])
+                if _np != selected_park and _np in (park_list or [_np]):
+                    st.session_state["_map_pick"] = _np
+                    st.rerun()
 with hcol[1]:
-    st.markdown(metric_card((selected_park or "-").replace("한강공원", "") or "-",
-                            "선택 공원"), unsafe_allow_html=True)
+    with st.container(key="hdrcard_park"):
+        st.markdown(f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">'
+                    f'{icon("wave", 18, TOK["ink_48"], TOK["primary"])}'
+                    f'<span class="caption" style="margin:0">선택 공원</span></div>', unsafe_allow_html=True)
+        if park_list:
+            st.selectbox("공원", park_list, key="hdr_park", on_change=_hdr_pick_park,
+                         label_visibility="collapsed")
+        _pa = pm[pm["공원명"] == selected_park]["총이용객"].mean() if selected_park in (park_list or []) else float("nan")
+        st.markdown(f'<div class="caption" style="margin-top:2px">월평균 {_pa/1e4:.1f}만 명</div>'
+                    if _pa == _pa else '<div class="caption">—</div>', unsafe_allow_html=True)
 with hcol[2]:
-    st.markdown(metric_card(page, "현재 분석"), unsafe_allow_html=True)
+    with st.container(key="hdrcard_page"):
+        st.markdown(f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">'
+                    f'{icon("chart", 18, TOK["ink_48"], TOK["primary"])}'
+                    f'<span class="caption" style="margin:0">현재 분석</span></div>', unsafe_allow_html=True)
+        st.selectbox("분석", [p[0] for p in PAGES], key="hdr_page", on_change=_hdr_pick_page,
+                     label_visibility="collapsed")
+        st.markdown(f'<div class="caption" style="margin-top:2px">{PAGE_DESC.get(page, "")}</div>',
+                    unsafe_allow_html=True)
 
+selected_park = st.session_state.get("selected_park")
 tile_close()
 
 
@@ -1257,20 +1311,51 @@ elif page == "신규 모델 (HSKR)":
         </div>
         """, unsafe_allow_html=True)
     else:
+        from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
         parks = list(B["parks"])
         core = [p for p in ("망원한강공원", "이촌한강공원", "잠실한강공원") if p in parks]
-        d_idx = parks.index(selected_park) if selected_park in parks else (parks.index(core[0]) if core else 0)
-        cpark = st.selectbox("공원 (HSKR 커버 8개)", parks, index=d_idx)
-        pp = B["per_park"][cpark]
-        met = pp["metrics"]
-        bn = "Ridge" if "Ridge" in met else B["best_base_name"]   # 비교 대상 = 기존 Ridge
+        bn = "Ridge" if "Ridge" in B["per_park"][parks[0]]["metrics"] else B["best_base_name"]
 
         def _red(p):
             mm = B["per_park"][p]["metrics"]
             return (mm[bn]["RMSE"] - mm["HSKR"]["RMSE"]) / mm[bn]["RMSE"] * 100 if mm[bn]["RMSE"] else 0.0
 
+        # ── 헤드라인: 상위 3개 제외 8개 공원 전체(풀링) 성능
+        yt_all = np.concatenate([np.asarray(B["per_park"][p]["y_test"], float) for p in parks])
+        hk_all = np.concatenate([np.asarray(B["per_park"][p]["hskr_pred_test"], float) for p in parks])
+        rg_all = np.concatenate([np.asarray(B["per_park"][p]["base_pred_test"][bn], float) for p in parks])
+        hk_r2, hk_rmse = r2_score(yt_all, hk_all), mean_squared_error(yt_all, hk_all) ** 0.5
+        rg_r2, rg_rmse = r2_score(yt_all, rg_all), mean_squared_error(yt_all, rg_all) ** 0.5
+        ov_red = (rg_rmse - hk_rmse) / rg_rmse * 100 if rg_rmse else 0.0
+
+        st.markdown('<div class="caption" style="margin-bottom:8px;line-height:1.6">HSKR의 핵심: '
+                    '이용객 <b>상위 3개(뚝섬·여의도·반포)를 제외</b>한 <b>8개 중소 공원 전용</b> 모델입니다. '
+                    '아래는 8개 공원 테스트 구간을 합친 <b>전체 성능</b> (동일 구간의 기존 Ridge와 비교).</div>',
+                    unsafe_allow_html=True)
+        g1, g2, g3 = st.columns(3, gap="medium")
+        g1.markdown(metric_card(f"+{ov_red:.1f}%", "전체 RMSE 감소율", delta="+vs Ridge"), unsafe_allow_html=True)
+        g2.markdown(metric_card(f"{hk_r2:.3f}", "전체 R² (HSKR)", delta=f"+Ridge {rg_r2:.3f}"), unsafe_allow_html=True)
+        g3.markdown(metric_card(f"{hk_rmse/1e4:.1f}만", "전체 RMSE (HSKR)",
+                                delta=f"+Ridge {rg_rmse/1e4:.1f}만"), unsafe_allow_html=True)
+        fov = go.Figure(go.Bar(x=[hk_rmse / 1e4, rg_rmse / 1e4], y=["HSKR", "Ridge(기존)"], orientation="h",
+                               marker_color=[TOK["primary"], "#E8505B"],
+                               text=[f"{hk_rmse/1e4:.1f}만", f"{rg_rmse/1e4:.1f}만"], textposition="outside"))
+        fov.update_layout(title="8개 공원 전체 RMSE (낮을수록 우수)", height=240, xaxis_title="RMSE(만)",
+                          yaxis=dict(autorange="reversed"))
+        style_fig(fov)
+        st.plotly_chart(fov, use_container_width=True, config={"displayModeBar": False})
+
+        st.markdown('<hr style="border:none;border-top:1px solid var(--hairline);margin:22px 0 6px 0">',
+                    unsafe_allow_html=True)
+        st.markdown('<h2 class="h-section">공원별 상세</h2>', unsafe_allow_html=True)
+
+        # 공원 선택 (상세)
+        d_idx = parks.index(selected_park) if selected_park in parks else (parks.index(core[0]) if core else 0)
+        cpark = st.selectbox("공원 (HSKR 커버 8개)", parks, index=d_idx)
+        pp = B["per_park"][cpark]
+        met = pp["metrics"]
         red = _red(cpark)
-        order = ["HSKR", bn]            # 2개만 비교
+        order = ["HSKR", bn]
         colors = [TOK["primary"], "#E8505B"]
 
         # ── KPI
