@@ -79,6 +79,7 @@ PLOT_PALETTE = [TOK["primary"], TOK["ink"], TOK["primary_on_dark"], TOK["ink_48"
 # ─────────────────────────────────────────────────────────────
 GLOBAL_CSS = f"""
 <style>
+@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@latest/dist/web/variable/pretendardvariable-dynamic-subset.css');
 :root {{
   --primary: {TOK['primary']};
   --primary-focus: {TOK['primary_focus']};
@@ -101,8 +102,8 @@ GLOBAL_CSS = f"""
 
 /* Reset Streamlit chrome */
 html, body, [class*="css"]  {{
-  font-family: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI",
-               "Inter", "Noto Sans KR", system-ui, sans-serif;
+  font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont,
+               "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
   letter-spacing: -0.01em;
@@ -133,7 +134,7 @@ header[data-testid="stHeader"] {{
 
 /* ── Display typography ───────────────────────────────────── */
 .h-hero {{
-  font-family: "SF Pro Display", -apple-system, "Inter", system-ui, sans-serif;
+  font-family: "Pretendard Variable", Pretendard, -apple-system, "Apple SD Gothic Neo", system-ui, sans-serif;
   font-size: 56px;
   font-weight: 600;
   line-height: 1.07;
@@ -141,7 +142,7 @@ header[data-testid="stHeader"] {{
   margin: 0;
 }}
 .h-display {{
-  font-family: "SF Pro Display", -apple-system, "Inter", system-ui, sans-serif;
+  font-family: "Pretendard Variable", Pretendard, -apple-system, "Apple SD Gothic Neo", system-ui, sans-serif;
   font-size: 40px;
   font-weight: 600;
   line-height: 1.10;
@@ -149,7 +150,7 @@ header[data-testid="stHeader"] {{
   margin: 0;
 }}
 .h-section {{
-  font-family: "SF Pro Display", -apple-system, "Inter", system-ui, sans-serif;
+  font-family: "Pretendard Variable", Pretendard, -apple-system, "Apple SD Gothic Neo", system-ui, sans-serif;
   font-size: 34px;
   font-weight: 600;
   line-height: 1.18;
@@ -282,7 +283,7 @@ header[data-testid="stHeader"] {{
   text-align: left;
 }}
 .card .metric-num {{
-  font-family: "SF Pro Display", -apple-system, sans-serif;
+  font-family: "Pretendard Variable", Pretendard, -apple-system, "Apple SD Gothic Neo", system-ui, sans-serif;
   font-size: 40px;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -315,7 +316,7 @@ section[data-testid="stSidebar"] h2,
 section[data-testid="stSidebar"] h3,
 section[data-testid="stSidebar"] label {{
   color: var(--ink);
-  font-family: "SF Pro Display", -apple-system, sans-serif;
+  font-family: "Pretendard Variable", Pretendard, -apple-system, "Apple SD Gothic Neo", system-ui, sans-serif;
   letter-spacing: -0.016em;
 }}
 section[data-testid="stSidebar"] .stRadio label {{ font-size: 14px; }}
@@ -615,9 +616,9 @@ def style_fig(fig: go.Figure, *, dark: bool = False) -> go.Figure:
     fig.update_layout(
         plot_bgcolor=bg,
         paper_bgcolor=bg,
-        font=dict(family='SF Pro Text, -apple-system, Inter, sans-serif', color=ink, size=13),
+        font=dict(family='Pretendard Variable, Pretendard, -apple-system, sans-serif', color=ink, size=13),
         margin=dict(l=20, r=20, t=40, b=30),
-        title=dict(font=dict(family='SF Pro Display, -apple-system, sans-serif', size=20, color=ink), x=0.02),
+        title=dict(font=dict(family='Pretendard Variable, Pretendard, -apple-system, sans-serif', size=20, color=ink), x=0.02),
         colorway=PLOT_PALETTE,
         legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor="rgba(0,0,0,0)"),
         xaxis=dict(gridcolor=grid, zerolinecolor=grid, linecolor=grid, tickfont=dict(color=ink)),
