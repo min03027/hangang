@@ -1376,34 +1376,59 @@ elif page == "SHAP 해석":
 
         base_val, sv, sample = compute_shap(bundle)
         names = bundle["names"]
+        Xdf = bundle["Xte"].reset_index(drop=True).iloc[:sample.shape[0]]   # 표본 메타(공원/연월)
 
-        # 1) 전역 기여도
+        # 1) SHAP 요약 (beeswarm) — 점=표본, 색=변수값(높음↔낮음)
+        st.markdown('<div class="caption" style="margin-bottom:6px">각 점 = 한 예측. '
+                    '가로축 = 그 변수가 예측을 얼마나 밀었는지(SHAP). '
+                    '색 = 변수값(<b style="color:#ff0d57">높음</b>/<b style="color:#1e88e5">낮음</b>).</div>',
+                    unsafe_allow_html=True)
         mean_abs = np.abs(sv).mean(axis=0)
-        imp = (pd.DataFrame({"변수": names, "기여도": mean_abs})
-               .sort_values("기여도", ascending=True).tail(15))
-        fig = px.bar(imp, x="기여도", y="변수", orientation="h")
-        fig.update_traces(marker_color=TOK["primary"], marker_line_width=0)
-        fig.update_layout(title="전역 기여도 (평균 |SHAP|, 상위 15)", height=480)
-        style_fig(fig)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        order = np.argsort(mean_abs)[-12:]                 # 상위 12 (오름차순)
+        figs = go.Figure()
+        rng = np.random.RandomState(0)
+        for rank, fi in enumerate(order):
+            vals = sample[:, fi].astype(float)
+            vmin, vmax = float(vals.min()), float(vals.max())
+            norm = (vals - vmin) / (vmax - vmin) if vmax > vmin else np.full_like(vals, 0.5)
+            jit = (rng.rand(len(vals)) - 0.5) * 0.6
+            figs.add_trace(go.Scatter(
+                x=sv[:, fi], y=np.full(len(vals), rank) + jit, mode="markers",
+                marker=dict(color=norm, colorscale="RdBu", reversescale=True, size=6, opacity=0.72,
+                            showscale=(rank == len(order) - 1),
+                            colorbar=dict(title="변수값", tickvals=[0, 1], ticktext=["낮음", "높음"], len=0.5)),
+                hovertext=[f"{names[fi]} = {v:.1f}" for v in vals], hoverinfo="text+x",
+                showlegend=False))
+        figs.add_vline(x=0, line=dict(color=TOK["ink"], dash="dot"))
+        figs.update_layout(title="SHAP 요약 (beeswarm, 상위 12 변수)", height=540,
+                           xaxis_title="SHAP value — 예측에 미친 영향",
+                           yaxis=dict(tickmode="array", tickvals=list(range(len(order))),
+                                      ticktext=[names[fi] for fi in order]))
+        style_fig(figs)
+        st.plotly_chart(figs, use_container_width=True, config={"displayModeBar": False})
 
-        # 2) 개별 예측 Force Plot (인터랙티브 JS — 한글 정상)
+        # 2) 개별 예측 Force Plot — 선택 공원 예측 기준
         st.markdown('<h2 class="h-section" style="margin-top:32px">개별 예측 기여도 (Force Plot)</h2>',
                     unsafe_allow_html=True)
-        st.markdown('<div class="caption" style="margin-bottom:10px">기준값(평균 예측)에서 시작해 '
-                    '<b style="color:#ff0d57">빨강=이용객을 늘리는</b>, '
-                    '<b style="color:#1e88e5">파랑=줄이는</b> 변수 기여로 최종 예측에 도달합니다.</div>',
-                    unsafe_allow_html=True)
-        idx = st.slider("설명할 표본 (테스트셋)", 0, len(sample) - 1, 0)
+        labels = [f"{i:>3} · {Xdf.iloc[i]['공원명']} · {pd.Timestamp(Xdf.iloc[i]['연월']):%Y-%m}"
+                  for i in range(len(Xdf))]
+        default_i = next((i for i in range(len(Xdf)) if Xdf.iloc[i]["공원명"] == selected_park), 0)
+        idx = st.selectbox("설명할 예측 (기본 = 선택한 공원)", range(len(Xdf)),
+                           index=default_i, format_func=lambda i: labels[i])
+
         pred_i = base_val + sv[idx, :].sum()
         k1, k2 = st.columns(2, gap="medium")
-        k1.markdown(metric_card(f"{pred_i/1e4:,.1f}만 명", "이 표본 예측"), unsafe_allow_html=True)
+        k1.markdown(metric_card(f"{pred_i/1e4:,.1f}만 명",
+                                f"예측 — {Xdf.iloc[idx]['공원명']}"), unsafe_allow_html=True)
         k2.markdown(metric_card(f"{base_val/1e4:,.1f}만 명", "기준값(평균 예측)"), unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin:6px 0 4px 0">기준값에서 '
+                    '<b style="color:#ff0d57">빨강(↑)</b> · <b style="color:#1e88e5">파랑(↓)</b> '
+                    '변수 기여를 거쳐 최종 예측에 도달합니다.</div>', unsafe_allow_html=True)
 
         fp = shap.force_plot(base_val, sv[idx, :], features=np.round(sample[idx, :], 1),
                              feature_names=names)
-        components.html(f"<head>{shap.getjs()}</head><body style='margin:0'>{fp.html()}</body>",
-                        height=170)
+        components.html(f"<head>{shap.getjs()}</head><body style='margin:0;padding:6px 0'>{fp.html()}</body>",
+                        height=200, scrolling=True)
     except Exception as e:
         st.markdown(f'<div class="caption">SHAP 분석 오류 — {e}</div>', unsafe_allow_html=True)
     tile_close()
