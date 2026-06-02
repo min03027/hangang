@@ -618,6 +618,26 @@ def get_Xy(df_in=None):
 
 
 # ─────────────────────────────────────────────────────────────
+# HSKR 비교 번들 로드 (직접 구현한 Hybrid Seasonal Kernel Ridge)
+#   · pkl 언피클 전 반드시 hskr_model 모듈 import 필요
+#   · 파일: hskr_model.py (루트) + model/hskr_model.pkl (또는 루트)
+# ─────────────────────────────────────────────────────────────
+@st.cache_resource
+def load_hskr():
+    try:
+        from hskr_model import HybridSeasonalKernelRidge  # noqa: F401  (언피클에 필요)
+    except Exception:
+        return None
+    base = os.path.dirname(__file__)
+    for p in (os.path.join(base, "model", "hskr_model.pkl"),
+              os.path.join(base, "hskr_model.pkl")):
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                return pickle.load(f)
+    return None
+
+
+# ─────────────────────────────────────────────────────────────
 # Plotly theme
 # ─────────────────────────────────────────────────────────────
 def style_fig(fig: go.Figure, *, dark: bool = False) -> go.Figure:
@@ -784,6 +804,7 @@ with st.sidebar:
         ("EDA",            "chart"),
         ("t-test & VIF",   "scatter"),
         ("모델 예측",       "model"),
+        ("모델 비교 (HSKR)", "spark"),
         ("예측 시뮬레이터",  "boot"),
         ("잔차 진단",       "diag"),
         ("SHAP 해석",       "shap"),
@@ -937,6 +958,7 @@ if page == "개요":
         ("EDA",            "chart",    "월별 추이 · 계절성 · 변수 분포"),
         ("t-test & VIF",   "scatter",  "유의 피처 선별 · 공선성 제거"),
         ("모델 예측",       "model",    "RandomForest 예측 · 변수 중요도"),
+        ("모델 비교 (HSKR)", "spark",    "신규 HSKR vs 기존 모델 비교"),
         ("예측 시뮬레이터",  "boot",     "입력 조정 → 실시간 예측"),
         ("잔차 진단",       "diag",     "Q-Q · 등분산 · 정규성 진단"),
         ("SHAP 해석",       "shap",     "전역 변수 기여도 해석"),
@@ -1256,6 +1278,91 @@ elif page == "모델 예측":
     figi.update_layout(title="상위 15개 변수 기여도", height=480)
     style_fig(figi)
     st.plotly_chart(figi, use_container_width=True, config={"displayModeBar": False})
+    tile_close()
+
+
+elif page == "모델 비교 (HSKR)":
+    tile_open("light", anchor="hskr")
+    st.markdown('<h2 class="h-display" style="color:var(--ink)">신규 모델 HSKR vs 기존 모델</h2>',
+                unsafe_allow_html=True)
+    st.markdown('<p class="lead">직접 구현한 Hybrid Seasonal Kernel Ridge(계절 푸리에 + RBF 커널)와 '
+                '기존 회귀 모델을 비교합니다 — 중소 8개 공원.</p>', unsafe_allow_html=True)
+    tile_close()
+
+    B = load_hskr()
+    tile_open("light")
+    if B is None:
+        st.markdown("""
+        <div class="card">
+          <div class="body-strong">HSKR 번들을 찾을 수 없습니다</div>
+          <div class="caption" style="margin-top:8px; line-height:1.7">
+            아래 두 파일을 두고 다시 실행하세요:<br/>
+            · <b>hskr_model.py</b> → 레포 루트 (appnew.py와 같은 폴더)<br/>
+            · <b>hskr_model.pkl</b> → <b>model/hskr_model.pkl</b> (또는 루트)
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        parks = list(B["parks"])
+        bn = B["best_base_name"]
+        core = [p for p in ("망원한강공원", "이촌한강공원", "잠실한강공원") if p in parks]
+
+        # 공원 선택 (HSKR 커버 8개) — 사이드바 선택이 커버되면 그걸 기본값
+        if selected_park in parks:
+            d_idx = parks.index(selected_park)
+        elif core:
+            d_idx = parks.index(core[0])
+        else:
+            d_idx = 0
+        cpark = st.selectbox("공원 (HSKR 커버 8개)", parks, index=d_idx)
+        pp = B["per_park"][cpark]
+        met = pp["metrics"]
+
+        # ── KPI: HSKR vs 최고 기존모델
+        st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+        k1, k2, k3 = st.columns(3, gap="medium")
+        k1.markdown(metric_card(f"{met['HSKR']['R2']:.3f}", "HSKR R²",
+                                delta=f"+RMSE -{pp['rmse_reduction_%']:.1f}% vs {bn}"), unsafe_allow_html=True)
+        k2.markdown(metric_card(f"{met['HSKR']['RMSE']/1e4:.1f}만", "HSKR RMSE"), unsafe_allow_html=True)
+        k3.markdown(metric_card(f"{met[bn]['RMSE']/1e4:.1f}만", f"기존 최고({bn}) RMSE"), unsafe_allow_html=True)
+
+        # ── 시계열: 실제 vs HSKR vs 최고 기존모델 (테스트 구간)
+        st.markdown('<h2 class="h-section" style="margin-top:24px">실제 vs 예측 (테스트 구간)</h2>',
+                    unsafe_allow_html=True)
+        fig = go.Figure()
+        if "dates_all" in pp and "y_all" in pp:
+            fig.add_trace(go.Scatter(x=pp["dates_all"], y=pp["y_all"], name="실제(전체)",
+                                     mode="lines", line=dict(color="rgba(140,140,150,0.35)", width=1.4)))
+        fig.add_trace(go.Scatter(x=pp["dates_test"], y=pp["y_test"], name="실제",
+                                 mode="lines+markers", line=dict(color=TOK["ink"], width=2),
+                                 marker=dict(size=6)))
+        fig.add_trace(go.Scatter(x=pp["dates_test"], y=pp["hskr_pred_test"], name="HSKR",
+                                 mode="lines+markers", line=dict(color=TOK["primary"], width=2.6)))
+        fig.add_trace(go.Scatter(x=pp["dates_test"], y=pp["base_pred_test"][bn], name=f"기존({bn})",
+                                 mode="lines+markers", line=dict(color="#E8505B", width=2, dash="dot")))
+        fig.update_layout(title=f"{cpark} — 테스트 구간 예측 비교", height=440, hovermode="x unified",
+                          yaxis_title="총이용객")
+        style_fig(fig)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # ── 모델별 지표 표 (R²/RMSE/MAE)
+        st.markdown('<h2 class="h-section" style="margin-top:24px">모델별 성능 지표</h2>',
+                    unsafe_allow_html=True)
+        rows = []
+        for name, m in met.items():
+            rows.append({"모델": name, "R²": round(m["R2"], 3),
+                         "RMSE(만)": round(m["RMSE"] / 1e4, 1), "MAE(만)": round(m["MAE"] / 1e4, 1)})
+        mdf = pd.DataFrame(rows).sort_values("RMSE(만)").reset_index(drop=True)
+        st.dataframe(mdf, use_container_width=True, hide_index=True)
+
+        # ── 핵심 3개 공원 평균 향상률
+        if core:
+            avg_red = float(np.mean([B["per_park"][p]["rmse_reduction_%"] for p in core]))
+            st.markdown(f'<div class="caption" style="margin-top:10px">핵심 3개 공원'
+                        f'({" · ".join(p.replace("한강공원","") for p in core)}) 평균 '
+                        f'RMSE 감소율 <b style="color:var(--primary)">+{avg_red:.1f}%</b> '
+                        f'(HSKR이 최고 기존모델 대비).</div>', unsafe_allow_html=True)
+        st.caption("※ HSKR은 중소 8개 공원만 커버 (대형 뚝섬·여의도·반포 제외). predict(X, months, t) 시그니처 사용.")
     tile_close()
 
 
