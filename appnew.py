@@ -773,31 +773,7 @@ with st.sidebar:
     else:
         st.text_input("공원명", value="여의도", key="selected_park")
     selected_park = st.session_state.get("selected_park")
-
-    # 미니 지도 — 모든 페이지에서 공원 선택 가능
-    _mini = folium.Map(location=[37.53, 126.98], zoom_start=10,
-                       tiles="CartoDB positron", zoom_control=False,
-                       scrollWheelZoom=False, dragging=False)
-    for _n, _c in PARK_COORDS.items():
-        _s = (_n == selected_park)
-        folium.CircleMarker(
-            location=_c, radius=7 if _s else 4,
-            color="#E8505B" if _s else "#0066cc",
-            weight=2, fill=True,
-            fill_color="#E8505B" if _s else "#0066cc", fill_opacity=0.95,
-            tooltip=_n, popup=_n,
-        ).add_to(_mini)
-    _md = st_folium(_mini, width=280, height=200, key="mini_map")
-    if _md:
-        _o = _md.get("last_object_clicked") or _md.get("last_clicked")
-        if _o:
-            _np = nearest_park(_o["lat"], _o["lng"])
-            if _np != selected_park and _np in (park_list or [_np]):
-                st.session_state["_map_pick"] = _np
-                st.rerun()
-    st.markdown(f'<div class="caption" style="margin:-6px 0 10px 0">선택: '
-                f'<b style="color:var(--primary)">{selected_park or "-"}</b></div>',
-                unsafe_allow_html=True)
+    # (미니 지도는 개요 상단 헤더로 이동됨)
 
     PAGES = [
         ("개요",            "spark"),
@@ -833,38 +809,6 @@ render_global_nav()
 
 
 # ─────────────────────────────────────────────────────────────
-# 지도 — 페이지 최상단 (히어로 바로 위). 개요 페이지에서만 표시
-# ─────────────────────────────────────────────────────────────
-if page == "개요":
-    _m = folium.Map(location=[37.53, 126.98], zoom_start=12, tiles="CartoDB positron")
-    for _name, _coord in PARK_COORDS.items():
-        _sel = (_name == selected_park)
-        folium.Marker(
-            location=_coord, tooltip=_name, popup=_name,
-            icon=folium.Icon(color="red" if _sel else "blue",
-                             icon="star" if _sel else "info-sign"),
-        ).add_to(_m)
-
-    tile_open("light")
-    st.markdown('<h2 class="h-section" style="text-align:center; margin-bottom:16px">'
-                '지도에서 공원을 선택하세요</h2>', unsafe_allow_html=True)
-    _map_data = st_folium(_m, width=1100, height=460, key="overview_map")
-    tile_close()
-
-    # 마커 클릭 → 가장 가까운 공원 선택 → 다음 run 에서 사이드바에 반영
-    _click = None
-    if _map_data:
-        _obj = _map_data.get("last_object_clicked") or _map_data.get("last_clicked")
-        if _obj:
-            _click = (_obj["lat"], _obj["lng"])
-    if _click is not None:
-        _near = nearest_park(_click[0], _click[1])
-        if _near != selected_park and _near in (park_list or [_near]):
-            st.session_state["_map_pick"] = _near
-            st.rerun()
-
-
-# ─────────────────────────────────────────────────────────────
 # Hero tile — light
 # ─────────────────────────────────────────────────────────────
 tile_open("light", anchor="overview")
@@ -888,22 +832,32 @@ if page == "개요":
             st.session_state["_nav"] = "EDA"
             st.rerun()
 
-# Top metric row
-if len(monthly) > 0:
-    total_users   = int(monthly["총이용객"].sum())
-    avg_monthly   = int(monthly["총이용객"].mean())
-    peak_idx      = monthly["총이용객"].idxmax()
-    peak_month    = monthly.loc[peak_idx, "연월"].strftime("%Y년 %m월")
-    trend_pct     = (monthly["총이용객"].iloc[-12:].mean()
-                     / max(monthly["총이용객"].iloc[:12].mean(), 1) - 1) * 100
-
-    st.markdown('<div style="height:40px"></div>', unsafe_allow_html=True)
-    c1, c2, c3, c4 = st.columns(4, gap="medium")
-    with c1: st.markdown(metric_card(f"{total_users/1e6:.1f}M", "누적 이용객"),                       unsafe_allow_html=True)
-    with c2: st.markdown(metric_card(f"{avg_monthly/1000:.0f}K", "월 평균 이용객"),                  unsafe_allow_html=True)
-    with c3: st.markdown(metric_card(peak_month,                "최대 방문 월"),                      unsafe_allow_html=True)
-    with c4: st.markdown(metric_card(f"{trend_pct:+.1f}%",       "최근 1년 추세",
-                                     delta=("+상승세" if trend_pct >= 0 else "감소세")),             unsafe_allow_html=True)
+# ── 헤더 행: 미니맵(2칸) + 선택 공원 + 현재 분석
+st.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
+hcol = st.columns([2, 1, 1], gap="medium")
+with hcol[0]:
+    _hm = folium.Map(location=[37.53, 126.98], zoom_start=11, tiles="CartoDB positron",
+                     zoom_control=False, scrollWheelZoom=False, dragging=False)
+    for _n, _c in PARK_COORDS.items():
+        _s = (_n == selected_park)
+        folium.CircleMarker(
+            location=_c, radius=8 if _s else 5,
+            color="#E8505B" if _s else "#0066cc", weight=2, fill=True,
+            fill_color="#E8505B" if _s else "#0066cc", fill_opacity=0.95,
+            tooltip=_n, popup=_n).add_to(_hm)
+    _hd = st_folium(_hm, height=200, use_container_width=True, key="header_map")
+    if _hd:
+        _o = _hd.get("last_object_clicked") or _hd.get("last_clicked")
+        if _o:
+            _np = nearest_park(_o["lat"], _o["lng"])
+            if _np != selected_park and _np in (park_list or [_np]):
+                st.session_state["_map_pick"] = _np
+                st.rerun()
+with hcol[1]:
+    st.markdown(metric_card((selected_park or "-").replace("한강공원", "") or "-",
+                            "선택 공원"), unsafe_allow_html=True)
+with hcol[2]:
+    st.markdown(metric_card(page, "현재 분석"), unsafe_allow_html=True)
 
 tile_close()
 
@@ -1283,10 +1237,10 @@ elif page == "모델 예측":
 
 elif page == "신규 모델 (HSKR)":
     tile_open("light", anchor="hskr")
-    st.markdown('<h2 class="h-display" style="color:var(--ink)">신규 모델 HSKR vs 기존 모델</h2>',
+    st.markdown('<h2 class="h-display" style="color:var(--ink)">신규 HSKR vs 기존 Ridge</h2>',
                 unsafe_allow_html=True)
     st.markdown('<p class="lead">직접 구현한 Hybrid Seasonal Kernel Ridge(계절 푸리에 + RBF 커널)와 '
-                '기존 회귀 모델을 비교합니다 — 중소 8개 공원.</p>', unsafe_allow_html=True)
+                '기존 Ridge(optuna) 모델을 비교합니다 — 중소 8개 공원.</p>', unsafe_allow_html=True)
     tile_close()
 
     B = load_hskr()
@@ -1304,16 +1258,20 @@ elif page == "신규 모델 (HSKR)":
         """, unsafe_allow_html=True)
     else:
         parks = list(B["parks"])
-        bn = B["best_base_name"]
         core = [p for p in ("망원한강공원", "이촌한강공원", "잠실한강공원") if p in parks]
         d_idx = parks.index(selected_park) if selected_park in parks else (parks.index(core[0]) if core else 0)
         cpark = st.selectbox("공원 (HSKR 커버 8개)", parks, index=d_idx)
         pp = B["per_park"][cpark]
         met = pp["metrics"]
-        red = float(pp["rmse_reduction_%"])
-        # 표시 순서: HSKR 먼저 → 기존 모델
-        order = ["HSKR"] + [m for m in ("GradientBoosting", "ExtraTrees", "Ridge", "ElasticNet") if m in met]
-        colors = [TOK["primary"] if m == "HSKR" else ("#E8505B" if m == bn else "#9aa0a6") for m in order]
+        bn = "Ridge" if "Ridge" in met else B["best_base_name"]   # 비교 대상 = 기존 Ridge
+
+        def _red(p):
+            mm = B["per_park"][p]["metrics"]
+            return (mm[bn]["RMSE"] - mm["HSKR"]["RMSE"]) / mm[bn]["RMSE"] * 100 if mm[bn]["RMSE"] else 0.0
+
+        red = _red(cpark)
+        order = ["HSKR", bn]            # 2개만 비교
+        colors = [TOK["primary"], "#E8505B"]
 
         # ── KPI
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
@@ -1341,8 +1299,9 @@ elif page == "신규 모델 (HSKR)":
         style_fig(fig)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # ── 전체 모델 비교 (RMSE / R²)
-        st.markdown('<h2 class="h-section" style="margin-top:20px">전체 모델 비교</h2>', unsafe_allow_html=True)
+        # ── 모델 비교 (RMSE / R²)
+        st.markdown('<h2 class="h-section" style="margin-top:20px">모델 비교 (HSKR vs Ridge)</h2>',
+                    unsafe_allow_html=True)
         ca, cb = st.columns(2, gap="medium")
         with ca:
             fr = go.Figure(go.Bar(x=[met[m]["RMSE"] / 1e4 for m in order], y=order, orientation="h",
@@ -1376,13 +1335,13 @@ elif page == "신규 모델 (HSKR)":
             style_fig(fsc)
             st.plotly_chart(fsc, use_container_width=True, config={"displayModeBar": False})
         with cd:
-            reds = sorted(((p, float(B["per_park"][p]["rmse_reduction_%"])) for p in parks), key=lambda x: x[1])
+            reds = sorted(((p, _red(p)) for p in parks), key=lambda x: x[1])
             barc = ["#E8505B" if p in core else TOK["primary"] for p, _ in reds]
             fp = go.Figure(go.Bar(x=[v for _, v in reds], y=[p.replace("한강공원", "") for p, _ in reds],
                                   orientation="h", marker_color=barc,
                                   text=[f"{v:+.0f}%" for _, v in reds], textposition="outside"))
             fp.add_vline(x=0, line=dict(color=TOK["ink"], dash="dot"))
-            fp.update_layout(title="공원별 RMSE 감소율 (빨강=핵심3)", height=380, xaxis_title="감소율 %")
+            fp.update_layout(title="공원별 RMSE 감소율 vs Ridge (빨강=핵심3)", height=380, xaxis_title="감소율 %")
             style_fig(fp)
             st.plotly_chart(fp, use_container_width=True, config={"displayModeBar": False})
 
@@ -1393,12 +1352,13 @@ elif page == "신규 모델 (HSKR)":
                              "MAE(만)": round(met[m]["MAE"] / 1e4, 1)} for m in order])
         st.dataframe(mdf, use_container_width=True, hide_index=True)
         if core:
-            avg_red = float(np.mean([B["per_park"][p]["rmse_reduction_%"] for p in core]))
+            avg_red = float(np.mean([_red(p) for p in core]))
             st.markdown(f'<div class="caption" style="margin-top:8px">핵심 3개 공원'
                         f'({" · ".join(p.replace("한강공원","") for p in core)}) 평균 RMSE 감소율 '
-                        f'<b style="color:var(--primary)">+{avg_red:.1f}%</b> (HSKR vs 최고 기존모델).</div>',
+                        f'<b style="color:var(--primary)">+{avg_red:.1f}%</b> (HSKR vs Ridge).</div>',
                         unsafe_allow_html=True)
-        st.caption("※ HSKR은 중소 8개 공원만 커버(대형 뚝섬·여의도·반포 제외). 모든 값은 번들의 테스트 구간 사전계산치.")
+        st.caption("※ HSKR은 중소 8개 공원만 커버(대형 뚝섬·여의도·반포 제외). 값은 번들 테스트 구간 사전계산치, "
+                   "Ridge는 동일 테스트 구간의 기존 Ridge 베이스라인.")
     tile_close()
 
 
