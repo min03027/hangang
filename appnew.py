@@ -24,14 +24,25 @@ from streamlit_folium import st_folium
 
 warnings.filterwarnings("ignore")
 
-# ── 한글 폰트 (fallback)
+# ── 한글 폰트 (matplotlib: SHAP 등 정적 플롯용)
+import matplotlib.font_manager as fm
 sys_name = platform.system()
 if sys_name == "Darwin":
     plt.rcParams["font.family"] = "AppleGothic"
 elif sys_name == "Windows":
     plt.rcParams["font.family"] = "Malgun Gothic"
 else:
-    plt.rcParams["font.family"] = "DejaVu Sans"
+    # Streamlit Cloud(Linux): packages.txt 의 fonts-nanum 등록
+    _set = False
+    for _fp in ("/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+                "/usr/share/fonts/opentype/nanum/NanumGothic.ttf"):
+        if os.path.exists(_fp):
+            fm.fontManager.addfont(_fp)
+            plt.rcParams["font.family"] = "NanumGothic"
+            _set = True
+            break
+    if not _set:
+        plt.rcParams["font.family"] = "DejaVu Sans"
 plt.rcParams["axes.unicode_minus"] = False
 
 # ─────────────────────────────────────────────────────────────
@@ -1356,7 +1367,7 @@ elif page == "SHAP 해석":
 
     try:
         import shap
-        import streamlit.components.v1 as components
+        import matplotlib.pyplot as plt
 
         # SHAP 계산은 무거우므로 캐시 (TreeExplainer · 트리 400개)
         @st.cache_resource
@@ -1370,44 +1381,23 @@ elif page == "SHAP 해석":
             Xt = Xt[:n]
             ex = shap.TreeExplainer(rf)
             sv = ex.shap_values(Xt)
-            base = ex.expected_value
-            base = float(np.ravel(base)[0])
+            base = float(np.ravel(ex.expected_value)[0])
             return base, np.asarray(sv), Xt
 
         base_val, sv, sample = compute_shap(bundle)
         names = bundle["names"]
         Xdf = bundle["Xte"].reset_index(drop=True).iloc[:sample.shape[0]]   # 표본 메타(공원/연월)
 
-        # 1) SHAP 요약 (beeswarm) — 점=표본, 색=변수값(높음↔낮음)
-        st.markdown('<div class="caption" style="margin-bottom:6px">각 점 = 한 예측. '
-                    '가로축 = 그 변수가 예측을 얼마나 밀었는지(SHAP). '
-                    '색 = 변수값(<b style="color:#ff0d57">높음</b>/<b style="color:#1e88e5">낮음</b>).</div>',
-                    unsafe_allow_html=True)
-        mean_abs = np.abs(sv).mean(axis=0)
-        order = np.argsort(mean_abs)[-12:]                 # 상위 12 (오름차순)
-        figs = go.Figure()
-        rng = np.random.RandomState(0)
-        for rank, fi in enumerate(order):
-            vals = sample[:, fi].astype(float)
-            vmin, vmax = float(vals.min()), float(vals.max())
-            norm = (vals - vmin) / (vmax - vmin) if vmax > vmin else np.full_like(vals, 0.5)
-            jit = (rng.rand(len(vals)) - 0.5) * 0.6
-            figs.add_trace(go.Scatter(
-                x=sv[:, fi], y=np.full(len(vals), rank) + jit, mode="markers",
-                marker=dict(color=norm, colorscale="RdBu", reversescale=True, size=6, opacity=0.72,
-                            showscale=(rank == len(order) - 1),
-                            colorbar=dict(title="변수값", tickvals=[0, 1], ticktext=["낮음", "높음"], len=0.5)),
-                hovertext=[f"{names[fi]} = {v:.1f}" for v in vals], hoverinfo="text+x",
-                showlegend=False))
-        figs.add_vline(x=0, line=dict(color=TOK["ink"], dash="dot"))
-        figs.update_layout(title="SHAP 요약 (beeswarm, 상위 12 변수)", height=540,
-                           xaxis_title="SHAP value — 예측에 미친 영향",
-                           yaxis=dict(tickmode="array", tickvals=list(range(len(order))),
-                                      ticktext=[names[fi] for fi in order]))
-        style_fig(figs)
-        st.plotly_chart(figs, use_container_width=True, config={"displayModeBar": False})
+        # 1) SHAP 요약 (정통 beeswarm)
+        st.markdown('<div class="caption" style="margin-bottom:6px">각 점 = 한 예측 · 가로축 = SHAP value '
+                    '(예측에 미친 영향) · 색 = 변수값(빨강 높음 / 파랑 낮음).</div>', unsafe_allow_html=True)
+        fig_s = plt.figure(figsize=(9, 6))
+        shap.summary_plot(sv, features=sample, feature_names=names, max_display=15, show=False)
+        plt.title("SHAP Summary (RandomForest)", fontsize=12)
+        plt.tight_layout()
+        st.pyplot(fig_s, clear_figure=True)
 
-        # 2) 개별 예측 Force Plot — 선택 공원 예측 기준
+        # 2) 개별 예측 Force Plot (matplotlib — 클라우드에서도 안정 표시)
         st.markdown('<h2 class="h-section" style="margin-top:32px">개별 예측 기여도 (Force Plot)</h2>',
                     unsafe_allow_html=True)
         labels = [f"{i:>3} · {Xdf.iloc[i]['공원명']} · {pd.Timestamp(Xdf.iloc[i]['연월']):%Y-%m}"
@@ -1425,10 +1415,10 @@ elif page == "SHAP 해석":
                     '<b style="color:#ff0d57">빨강(↑)</b> · <b style="color:#1e88e5">파랑(↓)</b> '
                     '변수 기여를 거쳐 최종 예측에 도달합니다.</div>', unsafe_allow_html=True)
 
-        fp = shap.force_plot(base_val, sv[idx, :], features=np.round(sample[idx, :], 1),
-                             feature_names=names)
-        components.html(f"<head>{shap.getjs()}</head><body style='margin:0;padding:6px 0'>{fp.html()}</body>",
-                        height=200, scrolling=True)
+        shap.force_plot(base_val, sv[idx, :], features=np.round(sample[idx, :], 1),
+                        feature_names=names, matplotlib=True, show=False,
+                        figsize=(20, 3), text_rotation=12)
+        st.pyplot(plt.gcf(), clear_figure=True)
     except Exception as e:
         st.markdown(f'<div class="caption">SHAP 분석 오류 — {e}</div>', unsafe_allow_html=True)
     tile_close()
