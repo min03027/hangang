@@ -1356,26 +1356,54 @@ elif page == "SHAP 해석":
 
     try:
         import shap
+        import streamlit.components.v1 as components
 
-        model = bundle["model"]
-        rf = model.named_steps["rf"]
-        pre = model.named_steps["pre"]
-        # 테스트셋 일부를 변환해 TreeExplainer 적용 (속도)
-        Xte_t = pre.transform(bundle["Xte"])
-        if hasattr(Xte_t, "toarray"):
-            Xte_t = Xte_t.toarray()
-        sample = Xte_t[:120]
-        explainer = shap.TreeExplainer(rf)
-        sv = explainer.shap_values(sample)
+        # SHAP 계산은 무거우므로 캐시 (TreeExplainer · 트리 400개)
+        @st.cache_resource
+        def compute_shap(_bundle, n=120):
+            mdl = _bundle["model"]
+            rf = mdl.named_steps["rf"]
+            pre = mdl.named_steps["pre"]
+            Xt = pre.transform(_bundle["Xte"])
+            if hasattr(Xt, "toarray"):
+                Xt = Xt.toarray()
+            Xt = Xt[:n]
+            ex = shap.TreeExplainer(rf)
+            sv = ex.shap_values(Xt)
+            base = ex.expected_value
+            base = float(np.ravel(base)[0])
+            return base, np.asarray(sv), Xt
+
+        base_val, sv, sample = compute_shap(bundle)
+        names = bundle["names"]
+
+        # 1) 전역 기여도
         mean_abs = np.abs(sv).mean(axis=0)
-        imp = (pd.DataFrame({"변수": bundle["names"], "기여도": mean_abs})
+        imp = (pd.DataFrame({"변수": names, "기여도": mean_abs})
                .sort_values("기여도", ascending=True).tail(15))
-
         fig = px.bar(imp, x="기여도", y="변수", orientation="h")
         fig.update_traces(marker_color=TOK["primary"], marker_line_width=0)
         fig.update_layout(title="전역 기여도 (평균 |SHAP|, 상위 15)", height=480)
         style_fig(fig)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # 2) 개별 예측 Force Plot (인터랙티브 JS — 한글 정상)
+        st.markdown('<h2 class="h-section" style="margin-top:32px">개별 예측 기여도 (Force Plot)</h2>',
+                    unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin-bottom:10px">기준값(평균 예측)에서 시작해 '
+                    '<b style="color:#ff0d57">빨강=이용객을 늘리는</b>, '
+                    '<b style="color:#1e88e5">파랑=줄이는</b> 변수 기여로 최종 예측에 도달합니다.</div>',
+                    unsafe_allow_html=True)
+        idx = st.slider("설명할 표본 (테스트셋)", 0, len(sample) - 1, 0)
+        pred_i = base_val + sv[idx, :].sum()
+        k1, k2 = st.columns(2, gap="medium")
+        k1.markdown(metric_card(f"{pred_i/1e4:,.1f}만 명", "이 표본 예측"), unsafe_allow_html=True)
+        k2.markdown(metric_card(f"{base_val/1e4:,.1f}만 명", "기준값(평균 예측)"), unsafe_allow_html=True)
+
+        fp = shap.force_plot(base_val, sv[idx, :], features=np.round(sample[idx, :], 1),
+                             feature_names=names)
+        components.html(f"<head>{shap.getjs()}</head><body style='margin:0'>{fp.html()}</body>",
+                        height=170)
     except Exception as e:
         st.markdown(f'<div class="caption">SHAP 분석 오류 — {e}</div>', unsafe_allow_html=True)
     tile_close()
