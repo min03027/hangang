@@ -1386,7 +1386,8 @@ elif page == "SHAP 해석":
 
         base_val, sv, sample = compute_shap(bundle)
         names = bundle["names"]
-        Xdf = bundle["Xte"].reset_index(drop=True).iloc[:sample.shape[0]]   # 표본 메타(공원/연월)
+        sub = bundle["Xte"].iloc[:sample.shape[0]]            # 표본 (원본 인덱스 유지)
+        ym = pm.loc[sub.index, "연월"].values                  # 연월은 pm에서 매핑 (Xte엔 없음)
 
         # 1) SHAP 요약 (정통 beeswarm)
         st.markdown('<div class="caption" style="margin-bottom:6px">각 점 = 한 예측 · 가로축 = SHAP value '
@@ -1400,16 +1401,16 @@ elif page == "SHAP 해석":
         # 2) 개별 예측 Force Plot (matplotlib — 클라우드에서도 안정 표시)
         st.markdown('<h2 class="h-section" style="margin-top:32px">개별 예측 기여도 (Force Plot)</h2>',
                     unsafe_allow_html=True)
-        labels = [f"{i:>3} · {Xdf.iloc[i]['공원명']} · {pd.Timestamp(Xdf.iloc[i]['연월']):%Y-%m}"
-                  for i in range(len(Xdf))]
-        default_i = next((i for i in range(len(Xdf)) if Xdf.iloc[i]["공원명"] == selected_park), 0)
-        idx = st.selectbox("설명할 예측 (기본 = 선택한 공원)", range(len(Xdf)),
+        labels = [f"{i:>3} · {sub.iloc[i]['공원명']} · {pd.Timestamp(ym[i]):%Y-%m}"
+                  for i in range(len(sub))]
+        default_i = next((i for i in range(len(sub)) if sub.iloc[i]["공원명"] == selected_park), 0)
+        idx = st.selectbox("설명할 예측 (기본 = 선택한 공원)", range(len(sub)),
                            index=default_i, format_func=lambda i: labels[i])
 
         pred_i = base_val + sv[idx, :].sum()
         k1, k2 = st.columns(2, gap="medium")
         k1.markdown(metric_card(f"{pred_i/1e4:,.1f}만 명",
-                                f"예측 — {Xdf.iloc[idx]['공원명']}"), unsafe_allow_html=True)
+                                f"예측 — {sub.iloc[idx]['공원명']}"), unsafe_allow_html=True)
         k2.markdown(metric_card(f"{base_val/1e4:,.1f}만 명", "기준값(평균 예측)"), unsafe_allow_html=True)
         st.markdown('<div class="caption" style="margin:6px 0 4px 0">기준값에서 '
                     '<b style="color:#ff0d57">빨강(↑)</b> · <b style="color:#1e88e5">파랑(↓)</b> '
