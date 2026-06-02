@@ -804,13 +804,14 @@ with st.sidebar:
         ("EDA",            "chart"),
         ("t-test & VIF",   "scatter"),
         ("모델 예측",       "model"),
-        ("모델 비교 (HSKR)", "spark"),
+        ("원래 모델 비교",   "model"),
         ("예측 시뮬레이터",  "boot"),
         ("잔차 진단",       "diag"),
         ("SHAP 해석",       "shap"),
         ("Conformal",      "interval"),
         ("Bootstrap CI",   "boot"),
         ("Nested CV",      "cv"),
+        ("신규 모델 (HSKR)", "spark"),
     ]
     page = st.radio("분석", [p[0] for p in PAGES], key="page", label_visibility="visible")
 
@@ -958,13 +959,14 @@ if page == "개요":
         ("EDA",            "chart",    "월별 추이 · 계절성 · 변수 분포"),
         ("t-test & VIF",   "scatter",  "유의 피처 선별 · 공선성 제거"),
         ("모델 예측",       "model",    "RandomForest 예측 · 변수 중요도"),
-        ("모델 비교 (HSKR)", "spark",    "신규 HSKR vs 기존 모델 비교"),
+        ("원래 모델 비교",   "model",    "기존 4개 모델 성능 비교"),
         ("예측 시뮬레이터",  "boot",     "입력 조정 → 실시간 예측"),
         ("잔차 진단",       "diag",     "Q-Q · 등분산 · 정규성 진단"),
         ("SHAP 해석",       "shap",     "전역 변수 기여도 해석"),
         ("Conformal",      "interval", "분포가정 없는 예측구간"),
         ("Bootstrap CI",   "boot",     "성능지표 신뢰구간"),
         ("Nested CV",      "cv",       "과적합 없는 일반화 추정"),
+        ("신규 모델 (HSKR)", "spark",    "내가 만든 HSKR vs 기존 모델"),
     ]
     for r in range(0, len(FEATURES), 3):
         cols = st.columns(3, gap="medium")
@@ -1281,7 +1283,77 @@ elif page == "모델 예측":
     tile_close()
 
 
-elif page == "모델 비교 (HSKR)":
+elif page == "원래 모델 비교":
+    tile_open("light", anchor="basecompare")
+    st.markdown('<h2 class="h-display" style="color:var(--ink)">기존 모델 비교</h2>', unsafe_allow_html=True)
+    st.markdown('<p class="lead">기존 회귀 모델 4종(Ridge · ElasticNet · GradientBoosting · ExtraTrees)의 '
+                '성능을 비교합니다 — 중소 8개 공원.</p>', unsafe_allow_html=True)
+    tile_close()
+
+    B = load_hskr()
+    tile_open("light")
+    if B is None:
+        st.markdown("""
+        <div class="card">
+          <div class="body-strong">모델 번들을 찾을 수 없습니다</div>
+          <div class="caption" style="margin-top:8px; line-height:1.7">
+            · <b>hskr_model.py</b> → 레포 루트 · <b>hskr_model.pkl</b> → <b>model/</b>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        parks = list(B["parks"])
+        d_idx = parks.index(selected_park) if selected_park in parks else 0
+        cpark = st.selectbox("공원 (8개)", parks, index=d_idx, key="base_cmp_park")
+        pp = B["per_park"][cpark]
+        met = pp["metrics"]
+        base_models = [m for m in ("Ridge", "ElasticNet", "GradientBoosting", "ExtraTrees") if m in met]
+
+        rows = [{"모델": m, "R²": round(met[m]["R2"], 3),
+                 "RMSE(만)": round(met[m]["RMSE"] / 1e4, 1), "MAE(만)": round(met[m]["MAE"] / 1e4, 1)}
+                for m in base_models]
+        mdf = pd.DataFrame(rows).sort_values("RMSE(만)").reset_index(drop=True)
+        best = mdf.iloc[0]["모델"]
+
+        st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+        k1, k2, k3 = st.columns(3, gap="medium")
+        k1.markdown(metric_card(best, "최고 기존모델", delta=f"+R² {met[best]['R2']:.3f}"), unsafe_allow_html=True)
+        k2.markdown(metric_card(f"{met[best]['RMSE']/1e4:.1f}만", f"{best} RMSE"), unsafe_allow_html=True)
+        k3.markdown(metric_card(f"{met[best]['MAE']/1e4:.1f}만", f"{best} MAE"), unsafe_allow_html=True)
+
+        # RMSE 막대 비교
+        st.markdown('<h2 class="h-section" style="margin-top:24px">모델별 RMSE</h2>', unsafe_allow_html=True)
+        figb = go.Figure(go.Bar(
+            x=[met[m]["RMSE"] / 1e4 for m in base_models], y=base_models, orientation="h",
+            marker_color=[("#E8505B" if m == best else TOK["primary"]) for m in base_models],
+            text=[f"{met[m]['RMSE']/1e4:.1f}만" for m in base_models], textposition="outside"))
+        figb.update_layout(title=f"{cpark} — 기존 모델 RMSE (낮을수록 좋음)", height=360, xaxis_title="RMSE(만)")
+        style_fig(figb)
+        st.plotly_chart(figb, use_container_width=True, config={"displayModeBar": False})
+
+        # 실제 vs 기존 모델들 시계열
+        st.markdown('<h2 class="h-section" style="margin-top:16px">실제 vs 기존 모델 예측 (테스트 구간)</h2>',
+                    unsafe_allow_html=True)
+        palette = ["#0066cc", "#2997ff", "#ff9f0a", "#5e5ce6"]
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=pp["dates_test"], y=pp["y_test"], name="실제",
+                                 mode="lines+markers", line=dict(color=TOK["ink"], width=2), marker=dict(size=6)))
+        for i, m in enumerate(base_models):
+            fig.add_trace(go.Scatter(x=pp["dates_test"], y=pp["base_pred_test"][m], name=m,
+                                     mode="lines", line=dict(color=palette[i % len(palette)], width=2,
+                                                             dash=("solid" if m == best else "dot"))))
+        fig.update_layout(title=f"{cpark} — 기존 모델 예측 비교", height=440, hovermode="x unified",
+                          yaxis_title="총이용객")
+        style_fig(fig)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        st.markdown('<h2 class="h-section" style="margin-top:16px">성능 지표 표</h2>', unsafe_allow_html=True)
+        st.dataframe(mdf, use_container_width=True, hide_index=True)
+        st.caption("※ 기존 모델 4종 비교. 신규 HSKR과의 비교는 메뉴 맨 아래 '신규 모델 (HSKR)' 참고.")
+    tile_close()
+
+
+elif page == "신규 모델 (HSKR)":
     tile_open("light", anchor="hskr")
     st.markdown('<h2 class="h-display" style="color:var(--ink)">신규 모델 HSKR vs 기존 모델</h2>',
                 unsafe_allow_html=True)
