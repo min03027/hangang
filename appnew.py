@@ -1051,7 +1051,8 @@ elif page == "EDA":
     st.markdown(f'<div class="caption" style="margin:-8px 0 14px 0">비교 차트는 사이드바에서 선택한 '
                 f'<b style="color:var(--primary)">{selected_park}</b> 기준입니다.</div>', unsafe_allow_html=True)
 
-    tabs = st.tabs(["이용 추이", "공원 비교", "계절 패턴", "히트맵", "상관·구성"])
+    tabs = st.tabs(["이용 추이", "공원 비교", "계절 패턴", "히트맵", "상관·구성",
+                    "기술통계", "공원별 EDA", "CCA"])
 
     # ── 탭1: 이용 추이 (전체 + 월별 전체 vs 선택) ───────────────
     with tabs[0]:
@@ -1185,6 +1186,98 @@ elif page == "EDA":
         figt.update_layout(title="시간대별 이용 비중 (아침·낮·저녁)", height=400, yaxis=dict(tickformat=".0%"))
         style_fig(figt)
         st.plotly_chart(figt, use_container_width=True, config={"displayModeBar": False})
+
+    # ── 탭6: 기술통계 (전체 + 공원별) ───────────────────────────
+    with tabs[5]:
+        st.markdown('<div class="caption" style="margin-bottom:8px">월 단위 기술통계 '
+                    '(count·mean·std·min·25/50/75%·max)</div>', unsafe_allow_html=True)
+        st.markdown('**전체 (공원-월 표본)**')
+        desc_cols = ["총이용객"] + [c for c in feature_cols if c not in ("월sin", "월cos")][:8]
+        desc_all = pm[desc_cols].describe().T.round(1).reset_index().rename(columns={"index": "변수"})
+        st.dataframe(desc_all, use_container_width=True, hide_index=True)
+        st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
+        st.markdown('**공원별 총이용객 요약**')
+        g = (pm.groupby("공원명")["총이용객"].describe()[["count", "mean", "std", "min", "50%", "max"]]
+             .round(0).reset_index())
+        g.columns = ["공원", "관측수", "평균", "표준편차", "최소", "중앙값", "최대"]
+        st.dataframe(g.sort_values("평균", ascending=False), use_container_width=True, hide_index=True)
+
+    # ── 탭7: 공원별 EDA (선택 공원 상세) ────────────────────────
+    with tabs[6]:
+        if has_sel:
+            d = sel_rows.sort_values("연월")
+            st.markdown(f'**{selected_park}** — 월별 추이 / 계절 / 시간대 구성', unsafe_allow_html=True)
+            c1, c2, c3 = st.columns(3, gap="medium")
+            c1.markdown(metric_card(f"{d['총이용객'].mean()/1e4:.1f}만", "월평균"), unsafe_allow_html=True)
+            c2.markdown(metric_card(f"{d['총이용객'].max()/1e4:.1f}만", "최대월"), unsafe_allow_html=True)
+            c3.markdown(metric_card(f"{d['검색량'].mean():.0f}", "평균 검색량"), unsafe_allow_html=True)
+            f1 = go.Figure()
+            f1.add_trace(go.Scatter(x=d["연월"], y=d["총이용객"], mode="lines+markers",
+                                    line=dict(color=TOK["primary"], width=2.4), fill="tozeroy",
+                                    fillcolor="rgba(0,102,204,0.08)", name="총이용객"))
+            f1.update_layout(title=f"{selected_park} 월별 이용객", height=360, hovermode="x unified")
+            style_fig(f1)
+            st.plotly_chart(f1, use_container_width=True, config={"displayModeBar": False})
+            cc1, cc2 = st.columns(2, gap="medium")
+            with cc1:
+                prof = d.groupby("월")["총이용객"].mean().reindex(range(1, 13))
+                f2 = go.Figure(go.Scatter(x=[f"{m}월" for m in range(1, 13)], y=prof.values,
+                                          mode="lines+markers", line=dict(color=TOK["ink"], width=2)))
+                f2.update_layout(title="월별 평균 프로파일", height=320, yaxis_title="평균 이용객")
+                style_fig(f2)
+                st.plotly_chart(f2, use_container_width=True, config={"displayModeBar": False})
+            with cc2:
+                f3 = px.box(d, x="계절", y="총이용객", color="계절",
+                            category_orders={"계절": SEASON_ORDER}, color_discrete_map=SEASON_C, points="all")
+                f3.update_layout(title="계절별 분포", height=320, showlegend=False)
+                style_fig(f3)
+                st.plotly_chart(f3, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.warning("선택 공원 데이터가 없습니다.")
+
+    # ── 탭8: CCA (정준상관분석) ─────────────────────────────────
+    with tabs[7]:
+        st.markdown('<div class="caption" style="margin-bottom:8px">CCA: 시설 이용 변수군(X)과 '
+                    '시간대 이용 변수군(Y, 아침·낮·저녁) 사이의 정준상관을 찾습니다.</div>', unsafe_allow_html=True)
+        try:
+            from sklearn.cross_decomposition import CCA
+            from sklearn.preprocessing import StandardScaler
+            facs = [c for c in feature_cols if c not in ("월sin", "월cos", "검색량") and c in pm.columns]
+            yc_cols = [c for c in time_cols if c in pm.columns]
+            if len(facs) >= 2 and len(yc_cols) >= 2:
+                Xs = StandardScaler().fit_transform(pm[facs].astype(float).fillna(0))
+                Ys = StandardScaler().fit_transform(pm[yc_cols].astype(float).fillna(0))
+                k = min(3, Xs.shape[1], Ys.shape[1])
+                cca = CCA(n_components=k, max_iter=1000).fit(Xs, Ys)
+                Xc, Yc = cca.transform(Xs, Ys)
+                corrs = [float(np.corrcoef(Xc[:, i], Yc[:, i])[0, 1]) for i in range(k)]
+                cca1, cca2 = st.columns([1, 1], gap="medium")
+                with cca1:
+                    fcc = go.Figure(go.Bar(x=[f"CC{i+1}" for i in range(k)], y=corrs,
+                                           marker_color=TOK["primary"],
+                                           text=[f"{c:.3f}" for c in corrs], textposition="outside"))
+                    fcc.update_layout(title="정준상관계수", height=340, yaxis=dict(range=[0, 1]),
+                                      yaxis_title="canonical corr")
+                    style_fig(fcc)
+                    st.plotly_chart(fcc, use_container_width=True, config={"displayModeBar": False})
+                with cca2:
+                    fsc = go.Figure(go.Scatter(x=Xc[:, 0], y=Yc[:, 0], mode="markers",
+                                               marker=dict(color=TOK["primary"], size=7, opacity=0.7)))
+                    fsc.update_layout(title=f"1번째 정준변량 (r={corrs[0]:.3f})", height=340,
+                                      xaxis_title="X 정준변량(시설)", yaxis_title="Y 정준변량(시간대)")
+                    style_fig(fsc)
+                    st.plotly_chart(fsc, use_container_width=True, config={"displayModeBar": False})
+                # X 로딩 상위 (1번째 정준변량 기여 시설)
+                load = pd.Series(cca.x_loadings_[:, 0], index=facs).sort_values(key=abs, ascending=False).head(10)
+                fld = go.Figure(go.Bar(x=load.values[::-1], y=load.index[::-1], orientation="h",
+                                       marker_color=TOK["primary"]))
+                fld.update_layout(title="1번째 정준변량 X 로딩 상위 10 (시설)", height=360, xaxis_title="loading")
+                style_fig(fld)
+                st.plotly_chart(fld, use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.warning("CCA에 필요한 변수가 부족합니다.")
+        except Exception as e:
+            st.markdown(f'<div class="caption">CCA 오류 — {e}</div>', unsafe_allow_html=True)
     tile_close()
 
 
@@ -1543,6 +1636,50 @@ elif page == "잔차 진단":
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     except Exception as e:
         st.markdown(f'<div class="caption">진단 오류 — {e}</div>', unsafe_allow_html=True)
+
+    # ── 모델별 Learning Curve
+    st.markdown('<h2 class="h-section" style="margin-top:26px">모델별 Learning Curve</h2>', unsafe_allow_html=True)
+    st.markdown('<div class="caption" style="margin-bottom:10px">훈련 표본 수를 늘려가며 학습·검증 R²를 봅니다. '
+                '두 곡선이 수렴하면 데이터 충분, 갭이 크면 과적합.</div>', unsafe_allow_html=True)
+    if st.button("Learning Curve 실행", type="primary", key="lc_run"):
+        try:
+            from sklearn.model_selection import learning_curve, KFold
+            from sklearn.compose import ColumnTransformer
+            from sklearn.preprocessing import OneHotEncoder
+            from sklearn.pipeline import Pipeline
+            from sklearn.linear_model import Ridge
+            from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+
+            Xlc, ylc = bundle["X"], bundle["y"]
+
+            def _mkpipe(est):
+                pre = ColumnTransformer([("num", "passthrough", feature_cols),
+                                         ("park", OneHotEncoder(handle_unknown="ignore"), ["공원명"])])
+                return Pipeline([("pre", pre), ("est", est)])
+
+            models = {
+                "Ridge": _mkpipe(Ridge(alpha=21)),
+                "RandomForest": _mkpipe(RandomForestRegressor(n_estimators=120, random_state=42, n_jobs=-1)),
+                "GradientBoosting": _mkpipe(GradientBoostingRegressor(random_state=42)),
+            }
+            sizes = np.linspace(0.2, 1.0, 5)
+            lcols = st.columns(len(models), gap="medium")
+            with st.spinner("학습 곡선 계산 중..."):
+                for (name, mdl), col in zip(models.items(), lcols):
+                    ts, tr, va = learning_curve(mdl, Xlc, ylc, train_sizes=sizes,
+                                                cv=KFold(4, shuffle=True, random_state=42),
+                                                scoring="r2", n_jobs=-1)
+                    flc = go.Figure()
+                    flc.add_trace(go.Scatter(x=ts, y=tr.mean(1), name="학습", mode="lines+markers",
+                                             line=dict(color=TOK["ink"], width=2)))
+                    flc.add_trace(go.Scatter(x=ts, y=va.mean(1), name="검증", mode="lines+markers",
+                                             line=dict(color=TOK["primary"], width=2.4)))
+                    flc.update_layout(title=name, height=320, xaxis_title="학습 표본수", yaxis_title="R²",
+                                      legend=dict(orientation="h", y=1.15))
+                    style_fig(flc)
+                    col.plotly_chart(flc, use_container_width=True, config={"displayModeBar": False})
+        except Exception as e:
+            st.markdown(f'<div class="caption">Learning Curve 오류 — {e}</div>', unsafe_allow_html=True)
     tile_close()
 
 
