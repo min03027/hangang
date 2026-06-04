@@ -637,23 +637,23 @@ def load_hskr():
     return None
 
 
-@st.cache_resource
 def load_learning_curves():
-    """사전 계산된 모델별 learning curve 결과 로드 (인앱 학습 없이 그리기 위함).
+    """사전 계산된 learning curve 결과 로드 (인앱 학습 없이 그리기 위함).
 
-    형식: { 모델명: {"train_sizes":[...], "train_scores":[...], "val_scores":[...]} }
-    scores 는 각 train_size 의 R² (폴드 평균 1D, 또는 [size×fold] 2D 모두 허용).
+    캐시하지 않음 — 파일이 가벼워(수십 KB) 매 실행 새로 읽어 파일 변경/추가를 즉시 반영.
+    실패 시 (None, 진단메시지) 로 원인을 함께 반환.
     """
     base = os.path.dirname(__file__)
-    for p in (os.path.join(base, "model", "learning_curves.pkl"),
-              os.path.join(base, "learning_curves.pkl")):
+    cands = [os.path.join(base, "model", "learning_curves.pkl"),
+             os.path.join(base, "learning_curves.pkl")]
+    for p in cands:
         if os.path.exists(p):
             try:
                 with open(p, "rb") as f:
-                    return pickle.load(f)
-            except Exception:
-                return None
-    return None
+                    return pickle.load(f), None
+            except Exception as e:
+                return None, f"로드 오류({os.path.basename(p)}): {type(e).__name__} — {e}"
+    return None, "파일 없음: " + " / ".join(cands)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1682,7 +1682,7 @@ elif page == "잔차 진단":
         style_fig(flc)
         col.plotly_chart(flc, use_container_width=True, config={"displayModeBar": False})
 
-    LC = load_learning_curves()
+    LC, lc_err = load_learning_curves()
     if LC:
         # 구조 자동 감지: 공원별({공원:{모델:...}}) vs 평면({모델:...})
         first = next(iter(LC.values()))
@@ -1703,14 +1703,13 @@ elif page == "잔차 진단":
                 _plot_lc(nm, curves[nm], col)
         st.caption("※ model/learning_curves.pkl 사전계산 결과 (직접 학습한 모델 기준). 인앱 재학습 안 함.")
     else:
-        st.markdown("""
+        st.markdown(f"""
         <div class="card">
-          <div class="body-strong">learning_curves.pkl 이 없습니다</div>
+          <div class="body-strong">learning curve 데이터를 불러오지 못했습니다</div>
           <div class="caption" style="margin-top:8px; line-height:1.8">
-            내 모델로 직접 뽑은 결과를 <b>model/learning_curves.pkl</b> 로 주세요. 형식:<br/>
-            <code>{ "Ridge": {"train_sizes":[...], "train_scores":[...], "val_scores":[...]},
-            "HSKR": {...}, ... }</code><br/>
-            scores 는 각 train_size 의 R² (폴드 평균 1D 또는 size×fold 2D).
+            진단: <code>{lc_err or "알 수 없음"}</code><br/>
+            형식: <code>{{ 공원명: {{ 모델명: {{"train_sizes":[...],"train_scores":[...],"val_scores":[...]}} }} }}</code>
+            또는 평면 <code>{{ 모델명: {{...}} }}</code>.
           </div>
         </div>
         """, unsafe_allow_html=True)
