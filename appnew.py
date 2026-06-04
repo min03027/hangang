@@ -656,6 +656,47 @@ def load_learning_curves():
     return None, "파일 없음: " + " / ".join(cands)
 
 
+@st.cache_data
+def compute_cca_vif(_df, cols, target="총이용객", vif_threshold=10.0):
+    """VIF로 공선성 제거 후, 각 피처 vs target 의 CCA(1성분) + 상관(피어슨/스피어만/켄달).
+
+    원본 run_cca 로직을 대시보드용으로 이식 (VIF 적용 단일, 전후비교 없음).
+    반환: (corr_df, variates{피처:(xc,yc,r,p)}, vif_cols)
+    """
+    from sklearn.cross_decomposition import CCA
+    from sklearn.preprocessing import StandardScaler
+    from scipy import stats
+    import statsmodels.api as sm
+    from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+    keep = [c for c in cols if c in _df.columns and _df[c].std() > 0]
+    while len(keep) > 1:                          # Stepwise VIF
+        Xc = sm.add_constant(_df[keep].astype(float).fillna(0))
+        vifs = [variance_inflation_factor(Xc.values, i + 1) for i in range(len(keep))]
+        if max(vifs) <= vif_threshold:
+            break
+        keep.pop(int(np.argmax(vifs)))
+    vif_cols = keep
+
+    ys = StandardScaler().fit_transform(_df[[target]].astype(float))
+    rows, variates = [], {}
+    for j in vif_cols:
+        xs = StandardScaler().fit_transform(_df[[j]].astype(float).fillna(0))
+        cca = CCA(scale=False, n_components=1).fit(xs, ys)
+        xc, yc = cca.transform(xs, ys)
+        xc, yc = xc[:, 0], yc[:, 0]
+        rP, pP = stats.pearsonr(xc, yc)
+        rS, pS = stats.spearmanr(xc, yc)
+        rK, pK = stats.kendalltau(xc, yc)
+        rows.append({"X_피처": j, "Pearson_r": round(float(rP), 3), "Pearson_p": round(float(pP), 3),
+                     "Spearman_r": round(float(rS), 3), "Spearman_p": round(float(pS), 3),
+                     "Kendall_r": round(float(rK), 3), "Kendall_p": round(float(pK), 3),
+                     "유의": "✅" if pP < 0.05 else ""})
+        variates[j] = (xc.tolist(), yc.tolist(), float(rP), float(pP))
+    corr_df = pd.DataFrame(rows).sort_values("Pearson_r", ascending=False).reset_index(drop=True)
+    return corr_df, variates, vif_cols
+
+
 # ─────────────────────────────────────────────────────────────
 # Plotly theme
 # ─────────────────────────────────────────────────────────────
@@ -1254,47 +1295,40 @@ elif page == "EDA":
         else:
             st.warning("선택 공원 데이터가 없습니다.")
 
-    # ── 탭8: CCA (정준상관분석) ─────────────────────────────────
+    # ── 탭8: CCA (피처별 vs 총이용객, VIF 적용) ─────────────────
     with tabs[7]:
-        st.markdown('<div class="caption" style="margin-bottom:8px">CCA: 시설 이용 변수군(X)과 '
-                    '시간대 이용 변수군(Y, 아침·낮·저녁) 사이의 정준상관을 찾습니다.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin-bottom:8px">각 피처와 <b>총이용객</b>의 '
+                    'CCA(1성분 정준상관) — <b>VIF 적용</b> 후 피처 기준. '
+                    '정준변량 산점도 + Pearson·Spearman·Kendall 상관.</div>', unsafe_allow_html=True)
         try:
-            from sklearn.cross_decomposition import CCA
-            from sklearn.preprocessing import StandardScaler
-            facs = [c for c in feature_cols if c not in ("월sin", "월cos", "검색량") and c in pm.columns]
-            yc_cols = [c for c in time_cols if c in pm.columns]
-            if len(facs) >= 2 and len(yc_cols) >= 2:
-                Xs = StandardScaler().fit_transform(pm[facs].astype(float).fillna(0))
-                Ys = StandardScaler().fit_transform(pm[yc_cols].astype(float).fillna(0))
-                k = min(3, Xs.shape[1], Ys.shape[1])
-                cca = CCA(n_components=k, max_iter=1000).fit(Xs, Ys)
-                Xc, Yc = cca.transform(Xs, Ys)
-                corrs = [float(np.corrcoef(Xc[:, i], Yc[:, i])[0, 1]) for i in range(k)]
-                cca1, cca2 = st.columns([1, 1], gap="medium")
-                with cca1:
-                    fcc = go.Figure(go.Bar(x=[f"CC{i+1}" for i in range(k)], y=corrs,
-                                           marker_color=TOK["primary"],
-                                           text=[f"{c:.3f}" for c in corrs], textposition="outside"))
-                    fcc.update_layout(title="정준상관계수", height=340, yaxis=dict(range=[0, 1]),
-                                      yaxis_title="canonical corr")
-                    style_fig(fcc)
-                    st.plotly_chart(fcc, use_container_width=True, config={"displayModeBar": False})
-                with cca2:
-                    fsc = go.Figure(go.Scatter(x=Xc[:, 0], y=Yc[:, 0], mode="markers",
-                                               marker=dict(color=TOK["primary"], size=7, opacity=0.7)))
-                    fsc.update_layout(title=f"1번째 정준변량 (r={corrs[0]:.3f})", height=340,
-                                      xaxis_title="X 정준변량(시설)", yaxis_title="Y 정준변량(시간대)")
-                    style_fig(fsc)
-                    st.plotly_chart(fsc, use_container_width=True, config={"displayModeBar": False})
-                # X 로딩 상위 (1번째 정준변량 기여 시설)
-                load = pd.Series(cca.x_loadings_[:, 0], index=facs).sort_values(key=abs, ascending=False).head(10)
-                fld = go.Figure(go.Bar(x=load.values[::-1], y=load.index[::-1], orientation="h",
-                                       marker_color=TOK["primary"]))
-                fld.update_layout(title="1번째 정준변량 X 로딩 상위 10 (시설)", height=360, xaxis_title="loading")
-                style_fig(fld)
-                st.plotly_chart(fld, use_container_width=True, config={"displayModeBar": False})
+            cca_cols = [c for c in feature_cols if c not in ("월sin", "월cos")]
+            corr_df, variates, vif_cols = compute_cca_vif(monthly, cca_cols)
+            n_sig = int((corr_df["유의"] == "✅").sum())
+            st.markdown(f'<div class="caption">VIF 통과 피처 <b>{len(vif_cols)}개</b> · '
+                        f'유의(p&lt;0.05) <b style="color:var(--primary)">{n_sig}개</b></div>',
+                        unsafe_allow_html=True)
+            if variates:
+                pick = st.selectbox("산점도 볼 피처", corr_df["X_피처"].tolist())
+                xc, yc, r, p = variates[pick]
+                xc, yc = np.asarray(xc), np.asarray(yc)
+                sl, ic = np.polyfit(xc, yc, 1)
+                xr = np.linspace(float(xc.min()), float(xc.max()), 50)
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=xc, y=yc, mode="markers", name="표본",
+                                         marker=dict(color="#9aa0a6", size=8, line=dict(color="#333", width=1))))
+                fig.add_trace(go.Scatter(x=xr, y=sl * xr + ic, mode="lines", name="회귀",
+                                         line=dict(color="#E8505B", width=2)))
+                fig.add_annotation(x=float(xc.min()), y=float(yc.max()), xanchor="left",
+                                   text=f"r = {r:.2f}, p = {p:.3f}", showarrow=False,
+                                   font=dict(size=13, color=TOK["ink"]))
+                fig.update_layout(title=f"CCA 산점도: {pick} vs 총이용객", height=420,
+                                  xaxis_title=f"{pick} (정준변량)", yaxis_title="총이용객 (정준변량)")
+                style_fig(fig)
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+                st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+                st.dataframe(corr_df, use_container_width=True, hide_index=True)
             else:
-                st.warning("CCA에 필요한 변수가 부족합니다.")
+                st.warning("CCA에 사용할 피처가 부족합니다.")
         except Exception as e:
             st.markdown(f'<div class="caption">CCA 오류 — {e}</div>', unsafe_allow_html=True)
     tile_close()
