@@ -862,7 +862,7 @@ with st.sidebar:
         ("Bootstrap CI",   "boot"),
         ("Nested CV",      "cv"),
         ("신규 모델 (HSKR)", "spark"),
-        ("피처 중요도 (재학습)", "model"),
+        ("핵심 변수 선별 효과", "model"),
     ]
     page = st.radio("분석", [p[0] for p in PAGES], key="page", label_visibility="visible")
 
@@ -916,7 +916,7 @@ PAGE_DESC = {
     "SHAP 해석": "변수 기여도", "Conformal": "예측 구간",
     "Bootstrap CI": "성능 신뢰구간", "Nested CV": "일반화 추정",
     "신규 모델 (HSKR)": "HSKR vs Ridge",
-    "피처 중요도 (재학습)": "핵심 피처로 축소 재학습",
+    "핵심 변수 선별 효과": "핵심 피처로 축소 재학습",
 }
 
 
@@ -1052,7 +1052,7 @@ if page == "개요":
         ("Bootstrap CI",   "boot",     "성능지표 신뢰구간"),
         ("Nested CV",      "cv",       "과적합 없는 일반화 추정"),
         ("신규 모델 (HSKR)", "spark",    "내가 만든 HSKR vs 기존 모델"),
-        ("피처 중요도 (재학습)", "model",  "전체 vs 핵심 피처 재학습 비교"),
+        ("핵심 변수 선별 효과", "model",  "전체 vs 핵심 피처 재학습 비교"),
     ]
     for r in range(0, len(FEATURES), 3):
         cols = st.columns(3, gap="medium")
@@ -1705,7 +1705,7 @@ elif page == "신규 모델 (HSKR)":
     tile_close()
 
 
-elif page == "피처 중요도 (재학습)":
+elif page == "핵심 변수 선별 효과":
     tile_open("light", anchor="featimp")
     st.markdown('<h2 class="h-display" style="color:var(--ink)">전체 피처 vs 핵심 피처 재학습</h2>',
                 unsafe_allow_html=True)
