@@ -637,6 +637,25 @@ def load_hskr():
     return None
 
 
+@st.cache_resource
+def load_learning_curves():
+    """사전 계산된 모델별 learning curve 결과 로드 (인앱 학습 없이 그리기 위함).
+
+    형식: { 모델명: {"train_sizes":[...], "train_scores":[...], "val_scores":[...]} }
+    scores 는 각 train_size 의 R² (폴드 평균 1D, 또는 [size×fold] 2D 모두 허용).
+    """
+    base = os.path.dirname(__file__)
+    for p in (os.path.join(base, "model", "learning_curves.pkl"),
+              os.path.join(base, "learning_curves.pkl")):
+        if os.path.exists(p):
+            try:
+                with open(p, "rb") as f:
+                    return pickle.load(f)
+            except Exception:
+                return None
+    return None
+
+
 # ─────────────────────────────────────────────────────────────
 # Plotly theme
 # ─────────────────────────────────────────────────────────────
@@ -1637,49 +1656,74 @@ elif page == "잔차 진단":
     except Exception as e:
         st.markdown(f'<div class="caption">진단 오류 — {e}</div>', unsafe_allow_html=True)
 
-    # ── 모델별 Learning Curve
+    # ── 모델별 Learning Curve (사전계산 결과를 그림 — 인앱 학습 없음)
     st.markdown('<h2 class="h-section" style="margin-top:26px">모델별 Learning Curve</h2>', unsafe_allow_html=True)
     st.markdown('<div class="caption" style="margin-bottom:10px">훈련 표본 수를 늘려가며 학습·검증 R²를 봅니다. '
                 '두 곡선이 수렴하면 데이터 충분, 갭이 크면 과적합.</div>', unsafe_allow_html=True)
-    if st.button("Learning Curve 실행", type="primary", key="lc_run"):
-        try:
-            from sklearn.model_selection import learning_curve, KFold
-            from sklearn.compose import ColumnTransformer
-            from sklearn.preprocessing import OneHotEncoder
-            from sklearn.pipeline import Pipeline
-            from sklearn.linear_model import Ridge
-            from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 
-            Xlc, ylc = bundle["X"], bundle["y"]
+    def _plot_lc(name, d, col):
+        ts = np.asarray(d["train_sizes"], float)
+        tr = np.asarray(d["train_scores"], float); va = np.asarray(d["val_scores"], float)
+        if tr.ndim == 2: tr = tr.mean(1)
+        if va.ndim == 2: va = va.mean(1)
+        flc = go.Figure()
+        flc.add_trace(go.Scatter(x=ts, y=tr, name="학습", mode="lines+markers",
+                                 line=dict(color=TOK["ink"], width=2)))
+        flc.add_trace(go.Scatter(x=ts, y=va, name="검증", mode="lines+markers",
+                                 line=dict(color=TOK["primary"], width=2.4)))
+        flc.update_layout(title=name, height=320, xaxis_title="학습 표본수", yaxis_title="R²",
+                          legend=dict(orientation="h", y=1.15))
+        style_fig(flc)
+        col.plotly_chart(flc, use_container_width=True, config={"displayModeBar": False})
 
-            def _mkpipe(est):
-                pre = ColumnTransformer([("num", "passthrough", feature_cols),
-                                         ("park", OneHotEncoder(handle_unknown="ignore"), ["공원명"])])
-                return Pipeline([("pre", pre), ("est", est)])
+    LC = load_learning_curves()
+    if LC:
+        names = list(LC.keys())
+        for r in range(0, len(names), 3):
+            row = names[r:r + 3]
+            lcols = st.columns(len(row), gap="medium")
+            for nm, col in zip(row, lcols):
+                _plot_lc(nm, LC[nm], col)
+        st.caption("※ model/learning_curves.pkl 의 사전계산 결과 (내가 학습한 모델 기준). 인앱 재학습 안 함.")
+    else:
+        st.markdown("""
+        <div class="card">
+          <div class="body-strong">learning_curves.pkl 이 없습니다</div>
+          <div class="caption" style="margin-top:8px; line-height:1.8">
+            내 모델로 직접 뽑은 결과를 <b>model/learning_curves.pkl</b> 로 주세요. 형식:<br/>
+            <code>{ "Ridge": {"train_sizes":[...], "train_scores":[...], "val_scores":[...]},
+            "HSKR": {...}, ... }</code><br/>
+            scores 는 각 train_size 의 R² (폴드 평균 1D 또는 size×fold 2D).
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        with st.expander("또는 앱에서 직접 계산 (참고용 — 인앱 학습)"):
+            if st.button("Learning Curve 인앱 계산", key="lc_run"):
+                try:
+                    from sklearn.model_selection import learning_curve, KFold
+                    from sklearn.compose import ColumnTransformer
+                    from sklearn.preprocessing import OneHotEncoder
+                    from sklearn.pipeline import Pipeline
+                    from sklearn.linear_model import Ridge
+                    from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+                    Xlc, ylc = bundle["X"], bundle["y"]
 
-            models = {
-                "Ridge": _mkpipe(Ridge(alpha=21)),
-                "RandomForest": _mkpipe(RandomForestRegressor(n_estimators=120, random_state=42, n_jobs=-1)),
-                "GradientBoosting": _mkpipe(GradientBoostingRegressor(random_state=42)),
-            }
-            sizes = np.linspace(0.2, 1.0, 5)
-            lcols = st.columns(len(models), gap="medium")
-            with st.spinner("학습 곡선 계산 중..."):
-                for (name, mdl), col in zip(models.items(), lcols):
-                    ts, tr, va = learning_curve(mdl, Xlc, ylc, train_sizes=sizes,
-                                                cv=KFold(4, shuffle=True, random_state=42),
-                                                scoring="r2", n_jobs=-1)
-                    flc = go.Figure()
-                    flc.add_trace(go.Scatter(x=ts, y=tr.mean(1), name="학습", mode="lines+markers",
-                                             line=dict(color=TOK["ink"], width=2)))
-                    flc.add_trace(go.Scatter(x=ts, y=va.mean(1), name="검증", mode="lines+markers",
-                                             line=dict(color=TOK["primary"], width=2.4)))
-                    flc.update_layout(title=name, height=320, xaxis_title="학습 표본수", yaxis_title="R²",
-                                      legend=dict(orientation="h", y=1.15))
-                    style_fig(flc)
-                    col.plotly_chart(flc, use_container_width=True, config={"displayModeBar": False})
-        except Exception as e:
-            st.markdown(f'<div class="caption">Learning Curve 오류 — {e}</div>', unsafe_allow_html=True)
+                    def _mkpipe(est):
+                        pre = ColumnTransformer([("num", "passthrough", feature_cols),
+                                                 ("park", OneHotEncoder(handle_unknown="ignore"), ["공원명"])])
+                        return Pipeline([("pre", pre), ("est", est)])
+                    models = {"Ridge": _mkpipe(Ridge(alpha=21)),
+                              "RandomForest": _mkpipe(RandomForestRegressor(n_estimators=120, random_state=42, n_jobs=-1)),
+                              "GradientBoosting": _mkpipe(GradientBoostingRegressor(random_state=42))}
+                    lcols = st.columns(len(models), gap="medium")
+                    with st.spinner("계산 중..."):
+                        for (nm, mdl), col in zip(models.items(), lcols):
+                            ts, tr, va = learning_curve(mdl, Xlc, ylc, train_sizes=np.linspace(0.2, 1.0, 5),
+                                                        cv=KFold(4, shuffle=True, random_state=42),
+                                                        scoring="r2", n_jobs=-1)
+                            _plot_lc(nm, {"train_sizes": ts, "train_scores": tr, "val_scores": va}, col)
+                except Exception as e:
+                    st.markdown(f'<div class="caption">오류 — {e}</div>', unsafe_allow_html=True)
     tile_close()
 
 
