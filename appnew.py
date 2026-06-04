@@ -1304,7 +1304,7 @@ elif page == "EDA":
             from sklearn.cross_decomposition import CCA
             from sklearn.preprocessing import StandardScaler
             cca_cols = [c for c in feature_cols if c not in ("월sin", "월cos")]
-            _, _, vif_cols = compute_cca_vif(monthly, cca_cols, key="ALL")
+            corr_df, variates, vif_cols = compute_cca_vif(monthly, cca_cols, key="ALL")
             Ycols = [c for c in time_cols if c in monthly.columns]
             Xcols = [c for c in vif_cols if c not in (Ycols + ["총이용객"])
                      and c in monthly.columns and monthly[c].std() > 0]
@@ -1382,6 +1382,43 @@ elif page == "EDA":
                     e1, e2 = st.columns(2, gap="medium")
                     e1.download_button("산점도 PNG", b_s.getvalue(), "cca_scatter.png", "image/png")
                     e2.download_button("기여도 PNG", b_w.getvalue(), "cca_weights.png", "image/png")
+
+                # ── 변수마다 산점도 한 장씩 저장 (예전 run_cca 방식)
+                st.markdown('<h3 class="h-section" style="margin-top:18px">변수별 산점도 저장</h3>',
+                            unsafe_allow_html=True)
+                st.markdown('<div class="caption" style="margin-bottom:6px">각 변수와 총이용객의 CCA 산점도를 '
+                            '<b>변수마다 한 장씩(.png)</b> ZIP으로 저장합니다 (+ correlation.csv).</div>',
+                            unsafe_allow_html=True)
+                only_sig = st.checkbox("유의한 변수만 (p<0.05)", value=True, key="cca_pf_sig")
+                if st.button("변수별 산점도 ZIP 생성", key="cca_pf_zip"):
+                    import io as _io2, zipfile as _zip, matplotlib.pyplot as _plt2
+
+                    def _cf(s):
+                        return s.replace("/", "_").replace(" ", "_").replace(",", "_")
+
+                    items = [(f, v) for f, v in variates.items() if (not only_sig or v[3] < 0.05)]
+                    bz = _io2.BytesIO()
+                    with st.spinner(f"{len(items)}개 산점도 생성 중..."):
+                        with _zip.ZipFile(bz, "w", _zip.ZIP_DEFLATED) as zf:
+                            for feat, (xcp, ycp, rp, pp) in items:
+                                xa, ya = np.asarray(xcp), np.asarray(ycp)
+                                ms, bs = np.polyfit(xa, ya, 1)
+                                xrr = np.array([xa.min(), xa.max()])
+                                fg, ax = _plt2.subplots(figsize=(6, 6))
+                                ax.scatter(xa, ya, color="grey", edgecolor="k")
+                                ax.plot(xrr, ms * xrr + bs, color="red")
+                                ax.text(xa.min(), ya.max(), f"r={rp:.2f}, p={pp:.3f}",
+                                        size="medium", weight="semibold")
+                                ax.set_xlabel(feat); ax.set_ylabel("총이용객")
+                                ax.set_title(f"CCA Scatter\n{feat} vs 총이용객")
+                                pb = _io2.BytesIO()
+                                fg.savefig(pb, format="png", dpi=150, bbox_inches="tight")
+                                _plt2.close(fg)
+                                zf.writestr(f"CCA_{_cf(feat)}.png", pb.getvalue())
+                            zf.writestr("correlation.csv", corr_df.to_csv(index=False).encode("utf-8-sig"))
+                    st.download_button("⬇️ 산점도 ZIP 다운로드", bz.getvalue(),
+                                       "cca_scatter_per_feature.zip", "application/zip")
+                    st.success(f"{len(items)}장 생성 완료.")
             else:
                 st.warning("X 또는 Y 변수가 부족합니다.")
         except Exception as e:
