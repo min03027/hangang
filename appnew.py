@@ -657,7 +657,7 @@ def load_learning_curves():
 
 
 @st.cache_data
-def compute_cca_vif(_df, cols, target="총이용객", vif_threshold=10.0):
+def compute_cca_vif(_df, cols, target="총이용객", vif_threshold=10.0, key=None):
     """VIF로 공선성 제거 후, 각 피처 vs target 의 CCA(1성분) + 상관(피어슨/스피어만/켄달).
 
     원본 run_cca 로직을 대시보드용으로 이식 (VIF 적용 단일, 전후비교 없음).
@@ -1302,7 +1302,7 @@ elif page == "EDA":
                     '정준변량 산점도 + Pearson·Spearman·Kendall 상관.</div>', unsafe_allow_html=True)
         try:
             cca_cols = [c for c in feature_cols if c not in ("월sin", "월cos")]
-            corr_df, variates, vif_cols = compute_cca_vif(monthly, cca_cols)
+            corr_df, variates, vif_cols = compute_cca_vif(monthly, cca_cols, key="ALL")
             n_sig = int((corr_df["유의"] == "✅").sum())
             st.markdown(f'<div class="caption">VIF 통과 피처 <b>{len(vif_cols)}개</b> · '
                         f'유의(p&lt;0.05) <b style="color:var(--primary)">{n_sig}개</b></div>',
@@ -1330,6 +1330,56 @@ elif page == "EDA":
                 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
                 st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
                 st.dataframe(corr_df, use_container_width=True, hide_index=True)
+
+                # ── 각 공원별 CCA 일괄 저장 (ZIP)
+                st.markdown('<h3 class="h-section" style="margin-top:24px">공원별 CCA 일괄 저장</h3>',
+                            unsafe_allow_html=True)
+                st.markdown('<div class="caption" style="margin-bottom:8px">각 공원별로 CCA를 돌려 '
+                            'ZIP(공원 폴더 + correlation.csv)으로 내려받습니다.</div>', unsafe_allow_html=True)
+                inc_png = st.checkbox("유의 피처 산점도 PNG도 포함 (느림)", value=False)
+                if st.button("공원별 CCA ZIP 생성", key="cca_zip"):
+                    import io as _io, zipfile as _zip
+                    import matplotlib.pyplot as _plt
+
+                    def _clean(s):
+                        return s.replace("/", "_").replace(" ", "_").replace(",", "_")
+
+                    buf = _io.BytesIO()
+                    with st.spinner("공원별 CCA 계산 중..."):
+                        with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as zf:
+                            summ = []
+                            for pk in park_list:
+                                sub = pm[pm["공원명"] == pk]
+                                if len(sub) < 6:
+                                    continue
+                                cdf_p, vr_p, vc_p = compute_cca_vif(sub, cca_cols, key=pk)
+                                zf.writestr(f"{_clean(pk)}/correlation.csv",
+                                            cdf_p.to_csv(index=False, encoding="utf-8-sig"))
+                                ns = int((cdf_p["유의"] == "✅").sum())
+                                summ.append({"공원": pk, "VIF통과": len(vc_p), "유의": ns})
+                                if inc_png:
+                                    for feat, (xcp, ycp, rp, pp) in vr_p.items():
+                                        if pp >= 0.05:
+                                            continue
+                                        xa, ya = np.asarray(xcp), np.asarray(ycp)
+                                        s_, i_ = np.polyfit(xa, ya, 1)
+                                        xr_ = np.linspace(xa.min(), xa.max(), 50)
+                                        figm, axm = _plt.subplots(figsize=(6, 6))
+                                        axm.scatter(xa, ya, color="grey", edgecolor="k")
+                                        axm.plot(xr_, s_ * xr_ + i_, color="red")
+                                        axm.text(xa.min(), ya.max(), f"r={rp:.2f}, p={pp:.3f}",
+                                                 size="medium", weight="semibold")
+                                        axm.set_xlabel(feat); axm.set_ylabel("총이용객")
+                                        axm.set_title(f"CCA: {feat} vs 총이용객\n{pk}")
+                                        pbuf = _io.BytesIO()
+                                        figm.savefig(pbuf, format="png", dpi=150, bbox_inches="tight")
+                                        _plt.close(figm)
+                                        zf.writestr(f"{_clean(pk)}/CCA_{_clean(feat)}.png", pbuf.getvalue())
+                            zf.writestr("summary.csv",
+                                        pd.DataFrame(summ).to_csv(index=False, encoding="utf-8-sig"))
+                    st.download_button("⬇️ CCA ZIP 다운로드", buf.getvalue(),
+                                       file_name="cca_per_park.zip", mime="application/zip")
+                    st.success(f"{len(summ)}개 공원 CCA 생성 완료.")
             else:
                 st.warning("CCA에 사용할 피처가 부족합니다.")
         except Exception as e:
