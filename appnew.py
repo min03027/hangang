@@ -1664,27 +1664,44 @@ elif page == "잔차 진단":
     def _plot_lc(name, d, col):
         ts = np.asarray(d["train_sizes"], float)
         tr = np.asarray(d["train_scores"], float); va = np.asarray(d["val_scores"], float)
-        if tr.ndim == 2: tr = tr.mean(1)
-        if va.ndim == 2: va = va.mean(1)
+        tr_m = tr.mean(1) if tr.ndim == 2 else tr
+        va_m = va.mean(1) if va.ndim == 2 else va
+        va_s = va.std(1) if va.ndim == 2 else np.zeros_like(va_m)
         flc = go.Figure()
-        flc.add_trace(go.Scatter(x=ts, y=tr, name="학습", mode="lines+markers",
+        # 검증 폴드 분산 밴드
+        flc.add_trace(go.Scatter(x=np.concatenate([ts, ts[::-1]]),
+                                 y=np.concatenate([va_m + va_s, (va_m - va_s)[::-1]]),
+                                 fill="toself", fillcolor="rgba(0,102,204,0.12)",
+                                 line=dict(color="rgba(0,0,0,0)"), showlegend=False, hoverinfo="skip"))
+        flc.add_trace(go.Scatter(x=ts, y=tr_m, name="학습", mode="lines+markers",
                                  line=dict(color=TOK["ink"], width=2)))
-        flc.add_trace(go.Scatter(x=ts, y=va, name="검증", mode="lines+markers",
+        flc.add_trace(go.Scatter(x=ts, y=va_m, name="검증", mode="lines+markers",
                                  line=dict(color=TOK["primary"], width=2.4)))
         flc.update_layout(title=name, height=320, xaxis_title="학습 표본수", yaxis_title="R²",
-                          legend=dict(orientation="h", y=1.15))
+                          legend=dict(orientation="h", y=1.16))
         style_fig(flc)
         col.plotly_chart(flc, use_container_width=True, config={"displayModeBar": False})
 
     LC = load_learning_curves()
     if LC:
-        names = list(LC.keys())
+        # 구조 자동 감지: 공원별({공원:{모델:...}}) vs 평면({모델:...})
+        first = next(iter(LC.values()))
+        is_perpark = isinstance(first, dict) and "train_sizes" not in first
+        if is_perpark:
+            pk = selected_park if selected_park in LC else list(LC.keys())[0]
+            curves = LC[pk]
+            st.markdown(f'<div class="caption" style="margin-bottom:6px">기준 공원: '
+                        f'<b style="color:var(--primary)">{pk}</b> '
+                        f'(사이드바/헤더에서 공원 변경 가능)</div>', unsafe_allow_html=True)
+        else:
+            curves = LC
+        names = list(curves.keys())
         for r in range(0, len(names), 3):
             row = names[r:r + 3]
             lcols = st.columns(len(row), gap="medium")
             for nm, col in zip(row, lcols):
-                _plot_lc(nm, LC[nm], col)
-        st.caption("※ model/learning_curves.pkl 의 사전계산 결과 (내가 학습한 모델 기준). 인앱 재학습 안 함.")
+                _plot_lc(nm, curves[nm], col)
+        st.caption("※ model/learning_curves.pkl 사전계산 결과 (직접 학습한 모델 기준). 인앱 재학습 안 함.")
     else:
         st.markdown("""
         <div class="card">
