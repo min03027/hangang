@@ -637,6 +637,26 @@ def load_hskr():
     return None
 
 
+# ─────────────────────────────────────────────────────────────
+# 피처 중요도 재학습 비교 번들 로드 (fi_models.pkl)
+#   · 전체 피처 vs 상위 N개 핵심 피처 재학습 성능 비교 (재학습 없이 읽어 그림)
+#   · models_top["HSKR"]가 커스텀 객체 → 언피클 전 hskr_model import 필요
+# ─────────────────────────────────────────────────────────────
+@st.cache_resource
+def load_fi():
+    try:
+        from hskr_model import HybridSeasonalKernelRidge  # noqa: F401  (언피클에 필요)
+    except Exception:
+        pass
+    base = os.path.dirname(__file__)
+    for p in (os.path.join(base, "model", "fi_models.pkl"),
+              os.path.join(base, "fi_models.pkl")):
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                return pickle.load(f)
+    return None
+
+
 def load_learning_curves():
     """사전 계산된 learning curve 결과 로드 (인앱 학습 없이 그리기 위함).
 
@@ -842,6 +862,7 @@ with st.sidebar:
         ("Bootstrap CI",   "boot"),
         ("Nested CV",      "cv"),
         ("신규 모델 (HSKR)", "spark"),
+        ("피처 중요도 (재학습)", "model"),
     ]
     page = st.radio("분석", [p[0] for p in PAGES], key="page", label_visibility="visible")
 
@@ -895,6 +916,7 @@ PAGE_DESC = {
     "SHAP 해석": "변수 기여도", "Conformal": "예측 구간",
     "Bootstrap CI": "성능 신뢰구간", "Nested CV": "일반화 추정",
     "신규 모델 (HSKR)": "HSKR vs Ridge",
+    "피처 중요도 (재학습)": "핵심 피처로 축소 재학습",
 }
 
 
@@ -1030,6 +1052,7 @@ if page == "개요":
         ("Bootstrap CI",   "boot",     "성능지표 신뢰구간"),
         ("Nested CV",      "cv",       "과적합 없는 일반화 추정"),
         ("신규 모델 (HSKR)", "spark",    "내가 만든 HSKR vs 기존 모델"),
+        ("피처 중요도 (재학습)", "model",  "전체 vs 핵심 피처 재학습 비교"),
     ]
     for r in range(0, len(FEATURES), 3):
         cols = st.columns(3, gap="medium")
@@ -1679,6 +1702,160 @@ elif page == "신규 모델 (HSKR)":
                         unsafe_allow_html=True)
         st.caption("※ HSKR은 중소 8개 공원만 커버(대형 뚝섬·여의도·반포 제외). 값은 번들 테스트 구간 사전계산치, "
                    "Ridge는 동일 테스트 구간의 기존 Ridge 베이스라인.")
+    tile_close()
+
+
+elif page == "피처 중요도 (재학습)":
+    tile_open("light", anchor="featimp")
+    st.markdown('<h2 class="h-display" style="color:var(--ink)">전체 피처 vs 핵심 피처 재학습</h2>',
+                unsafe_allow_html=True)
+    st.markdown('<p class="lead">RandomForest 변수 중요도로 <b>상위 핵심 피처</b>만 골라, 같은 분할·같은 모델로 '
+                '다시 학습했을 때 성능이 유지/향상되는지 비교합니다 — 변수를 줄여도 충분한지 확인.</p>',
+                unsafe_allow_html=True)
+    tile_close()
+
+    FB = load_fi()
+    tile_open("light")
+    if FB is None:
+        st.markdown("""
+        <div class="card">
+          <div class="body-strong">피처 중요도 번들(fi_models.pkl)을 찾을 수 없습니다</div>
+          <div class="caption" style="margin-top:8px; line-height:1.7">
+            아래 파일을 두고 다시 실행하세요:<br/>
+            · <b>fi_models.pkl</b> → <b>model/fi_models.pkl</b> (또는 루트)<br/>
+            · <b>hskr_model.py</b> → 레포 루트 (HSKR 추정기 언피클에 필요)
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        imp = dict(FB.get("importance", {}))
+        topf = list(FB.get("top_features", []))
+        allf = list(FB.get("all_features", []))
+        mfull, mtop = FB.get("metrics_full", {}), FB.get("metrics_top", {})
+        order_pref = ["Ridge", "RandomForest", "GradientBoosting", "HSKR"]
+        models = [m for m in order_pref if m in mfull and m in mtop]
+        models += [m for m in mfull if m not in models and m in mtop]
+        nf, nt = len(allf), len(topf)
+
+        def _f(m, k, which):  # 안전 추출
+            return float((mtop if which == "top" else mfull).get(m, {}).get(k, float("nan")))
+
+        # ── 헤드라인 KPI (정직하게: 향상/유지를 데이터 기준으로 구분)
+        TOL = 0.03                                          # R² 유지 허용폭
+        d_r2 = {m: _f(m, "R2", "top") - _f(m, "R2", "full") for m in models}
+        n_imp = sum(1 for m in models if d_r2[m] > 1e-9)    # 순수 향상
+        n_keep = sum(1 for m in models if d_r2[m] >= -TOL)  # 향상 + 소폭(±0.03) 유지
+        best_m = max(models, key=lambda m: _f(m, "R2", "top")) if models else None
+
+        st.markdown('<div class="caption" style="margin-bottom:8px;line-height:1.6">'
+                    f'전체 <b>{nf}개</b> 피처에서 RandomForest 중요도 상위 <b>{nt}개</b>로 줄여 재학습한 결과입니다. '
+                    '같은 train/test 분할·같은 하이퍼파라미터로 학습한 사전계산치(재학습 없음).</div>',
+                    unsafe_allow_html=True)
+        k1, k2, k3 = st.columns(3, gap="medium")
+        k1.markdown(metric_card(f"{nf}→{nt}", "피처 수 축소", delta="-핵심만"), unsafe_allow_html=True)
+        k2.markdown(metric_card(f"{n_keep}/{len(models)}", "R² 유지·향상 (±0.03)",
+                                delta=f"+향상 {n_imp}개"), unsafe_allow_html=True)
+        if best_m:
+            bd = d_r2[best_m]
+            k3.markdown(metric_card(f"{_f(best_m, 'R2', 'top'):.3f}", f"축소 최고 R² ({best_m})",
+                                    delta=f"+전체 {_f(best_m, 'R2', 'full'):.3f}" if bd >= 0
+                                          else f"전체 {_f(best_m, 'R2', 'full'):.3f}"),
+                        unsafe_allow_html=True)
+
+        # ── (1) 모델별 R² : 전체 vs 축소 (그룹 막대)
+        st.markdown('<h2 class="h-section" style="margin-top:20px">모델별 R² — 전체 vs 축소 피처</h2>',
+                    unsafe_allow_html=True)
+        figr = go.Figure()
+        figr.add_trace(go.Bar(name=f"전체 ({nf}개)", x=models, y=[_f(m, "R2", "full") for m in models],
+                              marker_color=TOK["ink_48"],
+                              text=[f"{_f(m, 'R2', 'full'):.3f}" for m in models], textposition="outside"))
+        figr.add_trace(go.Bar(name=f"축소 ({nt}개)", x=models, y=[_f(m, "R2", "top") for m in models],
+                              marker_color=TOK["primary"],
+                              text=[f"{_f(m, 'R2', 'top'):.3f}" for m in models], textposition="outside"))
+        figr.update_layout(barmode="group", height=360, yaxis_title="R² (높을수록 우수)",
+                           legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0))
+        style_fig(figr)
+        st.plotly_chart(figr, use_container_width=True, config={"displayModeBar": False})
+
+        # ── RMSE : 전체 vs 축소 (그룹 막대, 만 단위)
+        st.markdown('<h2 class="h-section" style="margin-top:14px">모델별 RMSE — 전체 vs 축소 피처</h2>',
+                    unsafe_allow_html=True)
+        fige = go.Figure()
+        fige.add_trace(go.Bar(name=f"전체 ({nf}개)", x=models, y=[_f(m, "RMSE", "full") / 1e4 for m in models],
+                              marker_color=TOK["ink_48"],
+                              text=[f"{_f(m, 'RMSE', 'full')/1e4:.1f}만" for m in models], textposition="outside"))
+        fige.add_trace(go.Bar(name=f"축소 ({nt}개)", x=models, y=[_f(m, "RMSE", "top") / 1e4 for m in models],
+                              marker_color=TOK["primary"],
+                              text=[f"{_f(m, 'RMSE', 'top')/1e4:.1f}만" for m in models], textposition="outside"))
+        fige.update_layout(barmode="group", height=360, yaxis_title="RMSE(만, 낮을수록 우수)",
+                           legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0))
+        style_fig(fige)
+        st.plotly_chart(fige, use_container_width=True, config={"displayModeBar": False})
+
+        # ── (2) 피처 중요도 막대 (내림차순, 상위 N개 강조)
+        st.markdown('<hr style="border:none;border-top:1px solid var(--hairline);margin:22px 0 6px 0">',
+                    unsafe_allow_html=True)
+        st.markdown('<h2 class="h-section">RandomForest 변수 중요도</h2>', unsafe_allow_html=True)
+        st.markdown(f'<div class="caption" style="margin-bottom:8px">파란색 = 선택된 상위 <b>{nt}개</b> 핵심 피처</div>',
+                    unsafe_allow_html=True)
+        if imp:
+            items = sorted(imp.items(), key=lambda x: x[1])  # 가로막대: 아래→위 오름차순
+            topset = set(topf)
+            ys = [k for k, _ in items]
+            xs = [v for _, v in items]
+            cols_i = [TOK["primary"] if k in topset else TOK["ink_48"] for k in ys]
+            figi = go.Figure(go.Bar(x=xs, y=ys, orientation="h", marker_color=cols_i,
+                                    text=[f"{v:.3f}" for v in xs], textposition="outside"))
+            figi.update_layout(height=max(360, 22 * len(items)), xaxis_title="중요도",
+                               margin=dict(l=10, r=40))
+            style_fig(figi)
+            st.plotly_chart(figi, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.caption("중요도 정보가 번들에 없습니다.")
+
+        # ── (3) 한 줄 결론 (실제 pkl 값 기준, 과장 없음)
+        if models:
+            imp_models = [m for m in models if d_r2[m] > 1e-9]
+            drop_models = sorted([m for m in models if d_r2[m] < -TOL], key=lambda m: d_r2[m])
+            top_join = ", ".join(topf)
+            parts = []
+            if imp_models:
+                parts.append("향상: " + ", ".join(f"{m}(+{d_r2[m]:.3f})" for m in imp_models))
+            if drop_models:
+                parts.append("하락: " + ", ".join(f"{m}({d_r2[m]:.3f})" for m in drop_models))
+            detail = " · ".join(parts) if parts else "모든 모델 ±0.03 이내 유지"
+            st.markdown(
+                '<div class="card" style="margin-top:6px">'
+                f'<div class="body-strong" style="color:var(--ink)">변수를 상위 {nt}개({top_join})로 줄이면 '
+                f'{len(models)}개 모델 중 {n_keep}개가 R²를 ±0.03 이내로 유지(그중 {n_imp}개 향상).</div>'
+                '<div class="caption" style="margin-top:6px;line-height:1.6">'
+                f'{detail}.<br/>소수 핵심 변수만으로 대부분 성능을 유지 → 모델 단순화·해석 용이. '
+                f'축소 후에도 최고 성능은 여전히 <b>{best_m}</b>(R² {_f(best_m, "R2", "top"):.3f}).</div></div>',
+                unsafe_allow_html=True)
+
+        # ── 비교표 + CSV (한글 안전 utf-8-sig)
+        st.markdown('<h2 class="h-section" style="margin-top:18px">비교표 · 다운로드</h2>',
+                    unsafe_allow_html=True)
+        cmp_df = pd.DataFrame([{
+            "모델": m,
+            "전체_R2": round(_f(m, "R2", "full"), 4),
+            "축소_R2": round(_f(m, "R2", "top"), 4),
+            "전체_RMSE": int(round(_f(m, "RMSE", "full"))),
+            "축소_RMSE": int(round(_f(m, "RMSE", "top"))),
+            "R2_변화": round(d_r2[m], 4),
+        } for m in models])
+        st.dataframe(cmp_df, use_container_width=True, hide_index=True)
+        imp_df = (pd.DataFrame([{"변수": k, "중요도": round(v, 5), "선택": (k in set(topf))}
+                                for k, v in sorted(imp.items(), key=lambda x: -x[1])])
+                  if imp else pd.DataFrame())
+        dc = st.columns(2, gap="medium")
+        dc[0].download_button("⬇️ 모델 비교표 CSV", cmp_df.to_csv(index=False).encode("utf-8-sig"),
+                              "fi_compare.csv", "text/csv", use_container_width=True)
+        if not imp_df.empty:
+            dc[1].download_button("⬇️ 변수 중요도 CSV", imp_df.to_csv(index=False).encode("utf-8-sig"),
+                                  "fi_importance.csv", "text/csv", use_container_width=True)
+        st.caption("※ 재학습 없이 사전계산된 fi_models.pkl 값만 읽어 그립니다. 일반이용자(아침/낮/저녁)는 "
+                   "타깃을 쪼갠 누수 변수라 학습에서 제외했습니다.")
     tile_close()
 
 
