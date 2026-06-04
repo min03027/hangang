@@ -1297,91 +1297,93 @@ elif page == "EDA":
 
     # ── 탭8: CCA (피처별 vs 총이용객, VIF 적용) ─────────────────
     with tabs[7]:
-        st.markdown('<div class="caption" style="margin-bottom:8px">각 피처와 <b>총이용객</b>의 '
-                    'CCA(1성분 정준상관) — <b>VIF 적용</b> 후 피처 기준. '
-                    '정준변량 산점도 + Pearson·Spearman·Kendall 상관.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin-bottom:8px">CCA(정준상관분석): '
+                    '<b>VIF 통과 변수군(X)</b> ↔ <b>시간대 변수군(Y: 아침·낮·저녁)</b>. '
+                    '1번째 정준쌍 산점도 + X측 변수 기여도, 결과 CSV·PNG 저장.</div>', unsafe_allow_html=True)
         try:
+            from sklearn.cross_decomposition import CCA
+            from sklearn.preprocessing import StandardScaler
             cca_cols = [c for c in feature_cols if c not in ("월sin", "월cos")]
-            corr_df, variates, vif_cols = compute_cca_vif(monthly, cca_cols, key="ALL")
-            n_sig = int((corr_df["유의"] == "✅").sum())
-            st.markdown(f'<div class="caption">VIF 통과 피처 <b>{len(vif_cols)}개</b> · '
-                        f'유의(p&lt;0.05) <b style="color:var(--primary)">{n_sig}개</b></div>',
+            _, _, vif_cols = compute_cca_vif(monthly, cca_cols, key="ALL")
+            Ycols = [c for c in time_cols if c in monthly.columns]
+            Xcols = [c for c in vif_cols if c not in (Ycols + ["총이용객"])
+                     and c in monthly.columns and monthly[c].std() > 0]
+            st.markdown(f'<div class="caption">표본 {len(monthly)}개 · '
+                        f'X(VIF 변수) <b>{len(Xcols)}개</b> · Y(시간대) <b>{len(Ycols)}개</b></div>',
                         unsafe_allow_html=True)
-            if variates:
-                sig_list = corr_df[corr_df["유의"] == "✅"]["X_피처"].tolist()
-                show_all = st.checkbox("유의하지 않은 피처도 포함", value=False)
-                opts = corr_df["X_피처"].tolist() if show_all else (sig_list or corr_df["X_피처"].tolist())
-                pick = st.selectbox("산점도 볼 피처 (기본: 유의 p<0.05만)", opts)
-                xc, yc, r, p = variates[pick]
-                xc, yc = np.asarray(xc), np.asarray(yc)
-                sl, ic = np.polyfit(xc, yc, 1)
-                xr = np.linspace(float(xc.min()), float(xc.max()), 50)
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=xc, y=yc, mode="markers", name="표본",
-                                         marker=dict(color="#9aa0a6", size=8, line=dict(color="#333", width=1))))
-                fig.add_trace(go.Scatter(x=xr, y=sl * xr + ic, mode="lines", name="회귀",
-                                         line=dict(color="#E8505B", width=2)))
-                fig.add_annotation(x=float(xc.min()), y=float(yc.max()), xanchor="left",
-                                   text=f"r = {r:.2f}, p = {p:.3f}", showarrow=False,
-                                   font=dict(size=13, color=TOK["ink"]))
-                fig.update_layout(title=f"CCA 산점도: {pick} vs 총이용객", height=420,
-                                  xaxis_title=f"{pick} (정준변량)", yaxis_title="총이용객 (정준변량)")
-                style_fig(fig)
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-                st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
-                st.dataframe(corr_df, use_container_width=True, hide_index=True)
-
-                # ── 각 공원별 CCA 일괄 저장 (ZIP)
-                st.markdown('<h3 class="h-section" style="margin-top:24px">공원별 CCA 일괄 저장</h3>',
+            if len(Xcols) > len(monthly) // 7:
+                st.markdown(f'<div class="caption" style="color:#E8505B">⚠️ X({len(Xcols)})가 표본 대비 '
+                            f'많은 편(권장 ≤{len(monthly)//7}) — 1번째 정준상관이 다소 높게 나올 수 있습니다.</div>',
                             unsafe_allow_html=True)
-                st.markdown('<div class="caption" style="margin-bottom:8px">각 공원별로 CCA를 돌려 '
-                            'ZIP(공원 폴더 + correlation.csv)으로 내려받습니다.</div>', unsafe_allow_html=True)
-                inc_png = st.checkbox("유의 피처 산점도 PNG도 포함 (느림)", value=False)
-                if st.button("공원별 CCA ZIP 생성", key="cca_zip"):
-                    import io as _io, zipfile as _zip
-                    import matplotlib.pyplot as _plt
+            if len(Xcols) >= 2 and len(Ycols) >= 2:
+                Xm = StandardScaler().fit_transform(monthly[Xcols])
+                Ym = StandardScaler().fit_transform(monthly[Ycols])
+                ncomp = min(len(Xcols), len(Ycols))
+                cca = CCA(n_components=ncomp).fit(Xm, Ym)
+                U, V = cca.transform(Xm, Ym)
+                corrs = [float(np.corrcoef(U[:, i], V[:, i])[0, 1]) for i in range(ncomp)]
+                comp_cols = [f"CC{i+1}" for i in range(ncomp)]
 
-                    def _clean(s):
-                        return s.replace("/", "_").replace(" ", "_").replace(",", "_")
+                kc = st.columns(ncomp, gap="medium")
+                for i in range(ncomp):
+                    kc[i].markdown(metric_card(f"{corrs[i]:.3f}", f"정준상관 CC{i+1}"), unsafe_allow_html=True)
 
-                    buf = _io.BytesIO()
-                    with st.spinner("공원별 CCA 계산 중..."):
-                        with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as zf:
-                            summ = []
-                            for pk in park_list:
-                                sub = pm[pm["공원명"] == pk]
-                                if len(sub) < 6:
-                                    continue
-                                cdf_p, vr_p, vc_p = compute_cca_vif(sub, cca_cols, key=pk)
-                                zf.writestr(f"{_clean(pk)}/correlation.csv",
-                                            cdf_p.to_csv(index=False, encoding="utf-8-sig"))
-                                ns = int((cdf_p["유의"] == "✅").sum())
-                                summ.append({"공원": pk, "VIF통과": len(vc_p), "유의": ns})
-                                if inc_png:
-                                    for feat, (xcp, ycp, rp, pp) in vr_p.items():
-                                        if pp >= 0.05:
-                                            continue
-                                        xa, ya = np.asarray(xcp), np.asarray(ycp)
-                                        s_, i_ = np.polyfit(xa, ya, 1)
-                                        xr_ = np.linspace(xa.min(), xa.max(), 50)
-                                        figm, axm = _plt.subplots(figsize=(6, 6))
-                                        axm.scatter(xa, ya, color="grey", edgecolor="k")
-                                        axm.plot(xr_, s_ * xr_ + i_, color="red")
-                                        axm.text(xa.min(), ya.max(), f"r={rp:.2f}, p={pp:.3f}",
-                                                 size="medium", weight="semibold")
-                                        axm.set_xlabel(feat); axm.set_ylabel("총이용객")
-                                        axm.set_title(f"CCA: {feat} vs 총이용객\n{pk}")
-                                        pbuf = _io.BytesIO()
-                                        figm.savefig(pbuf, format="png", dpi=150, bbox_inches="tight")
-                                        _plt.close(figm)
-                                        zf.writestr(f"{_clean(pk)}/CCA_{_clean(feat)}.png", pbuf.getvalue())
-                            zf.writestr("summary.csv",
-                                        pd.DataFrame(summ).to_csv(index=False, encoding="utf-8-sig"))
-                    st.download_button("⬇️ CCA ZIP 다운로드", buf.getvalue(),
-                                       file_name="cca_per_park.zip", mime="application/zip")
-                    st.success(f"{len(summ)}개 공원 CCA 생성 완료.")
+                m1, b1 = np.polyfit(U[:, 0], V[:, 0], 1)
+                xr = np.array([U[:, 0].min(), U[:, 0].max()])
+                c1, c2 = st.columns(2, gap="medium")
+                with c1:
+                    f1 = go.Figure()
+                    f1.add_trace(go.Scatter(x=U[:, 0], y=V[:, 0], mode="markers", name="표본",
+                                            marker=dict(color="#9aa0a6", size=8, line=dict(color="#333", width=1))))
+                    f1.add_trace(go.Scatter(x=xr, y=m1 * xr + b1, mode="lines", name="회귀",
+                                            line=dict(color="#E8505B", width=2)))
+                    f1.update_layout(title=f"1번째 정준쌍 (r={corrs[0]:.2f})", height=360,
+                                     xaxis_title="시설 정준변수 U₁", yaxis_title="시간대 정준변수 V₁")
+                    style_fig(f1)
+                    st.plotly_chart(f1, use_container_width=True, config={"displayModeBar": False})
+                with c2:
+                    xw1 = pd.Series(cca.x_weights_[:, 0], index=Xcols).sort_values(key=abs, ascending=False).head(10)[::-1]
+                    f2 = go.Figure(go.Bar(x=xw1.values, y=xw1.index, orientation="h", marker_color=TOK["primary"]))
+                    f2.add_vline(x=0, line=dict(color=TOK["ink"], dash="dot"))
+                    f2.update_layout(title="X측 변수 기여도 (CC1 상위10)", height=360, xaxis_title="weight")
+                    style_fig(f2)
+                    st.plotly_chart(f2, use_container_width=True, config={"displayModeBar": False})
+
+                yw_df = (pd.DataFrame(np.round(cca.y_weights_, 3), index=Ycols, columns=comp_cols)
+                         .reset_index().rename(columns={"index": "시간대"}))
+                st.markdown('<div class="caption" style="margin:6px 0">Y측(시간대) 가중치</div>', unsafe_allow_html=True)
+                st.dataframe(yw_df, use_container_width=True, hide_index=True)
+
+                # ── 결과 저장 (CSV + 그림 PNG)
+                st.markdown('<h3 class="h-section" style="margin-top:18px">결과 저장</h3>', unsafe_allow_html=True)
+                corrs_df = pd.DataFrame({"정준쌍": comp_cols, "정준상관계수": [round(c, 4) for c in corrs]})
+                xw_full = (pd.DataFrame(np.round(cca.x_weights_, 4), index=Xcols, columns=comp_cols)
+                           .reset_index().rename(columns={"index": "X_피처"}))
+                d1, d2, d3 = st.columns(3, gap="medium")
+                d1.download_button("정준상관 CSV", corrs_df.to_csv(index=False, encoding="utf-8-sig"),
+                                   "cca_canonical_corr.csv", "text/csv")
+                d2.download_button("X 가중치 CSV", xw_full.to_csv(index=False, encoding="utf-8-sig"),
+                                   "cca_x_weights.csv", "text/csv")
+                d3.download_button("Y 가중치 CSV", yw_df.to_csv(index=False, encoding="utf-8-sig"),
+                                   "cca_y_weights.csv", "text/csv")
+                if st.button("그림(PNG) 파일 생성", key="cca_png"):
+                    import io as _io, matplotlib.pyplot as _plt
+                    figp, axp = _plt.subplots(figsize=(6, 5))
+                    axp.scatter(U[:, 0], V[:, 0], c="gray", edgecolor="black")
+                    axp.plot(xr, m1 * xr + b1, "r")
+                    axp.set_xlabel("시설 정준변수 U1"); axp.set_ylabel("시간대 정준변수 V1")
+                    axp.set_title(f"CCA 1번째 정준쌍 (r={corrs[0]:.2f})")
+                    b_s = _io.BytesIO(); figp.savefig(b_s, format="png", dpi=150, bbox_inches="tight"); _plt.close(figp)
+                    top = pd.Series(cca.x_weights_[:, 0], index=Xcols).sort_values(key=abs, ascending=False).head(10)[::-1]
+                    figq, axq = _plt.subplots(figsize=(6, 4))
+                    axq.barh(top.index, top.values, color="teal"); axq.axvline(0, color="black", lw=0.5)
+                    axq.set_title("X측 변수 기여도 (1번째 정준쌍)")
+                    b_w = _io.BytesIO(); figq.savefig(b_w, format="png", dpi=150, bbox_inches="tight"); _plt.close(figq)
+                    e1, e2 = st.columns(2, gap="medium")
+                    e1.download_button("산점도 PNG", b_s.getvalue(), "cca_scatter.png", "image/png")
+                    e2.download_button("기여도 PNG", b_w.getvalue(), "cca_weights.png", "image/png")
             else:
-                st.warning("CCA에 사용할 피처가 부족합니다.")
+                st.warning("X 또는 Y 변수가 부족합니다.")
         except Exception as e:
             st.markdown(f'<div class="caption">CCA 오류 — {e}</div>', unsafe_allow_html=True)
     tile_close()
