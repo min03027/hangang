@@ -1308,7 +1308,10 @@ elif page == "EDA":
                         f'유의(p&lt;0.05) <b style="color:var(--primary)">{n_sig}개</b></div>',
                         unsafe_allow_html=True)
             if variates:
-                pick = st.selectbox("산점도 볼 피처", corr_df["X_피처"].tolist())
+                sig_list = corr_df[corr_df["유의"] == "✅"]["X_피처"].tolist()
+                show_all = st.checkbox("유의하지 않은 피처도 포함", value=False)
+                opts = corr_df["X_피처"].tolist() if show_all else (sig_list or corr_df["X_피처"].tolist())
+                pick = st.selectbox("산점도 볼 피처 (기본: 유의 p<0.05만)", opts)
                 xc, yc, r, p = variates[pick]
                 xc, yc = np.asarray(xc), np.asarray(yc)
                 sl, ic = np.polyfit(xc, yc, 1)
