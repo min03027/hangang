@@ -1360,11 +1360,11 @@ elif page == "EDA":
                 xw_full = (pd.DataFrame(np.round(cca.x_weights_, 4), index=Xcols, columns=comp_cols)
                            .reset_index().rename(columns={"index": "X_피처"}))
                 d1, d2, d3 = st.columns(3, gap="medium")
-                d1.download_button("정준상관 CSV", corrs_df.to_csv(index=False, encoding="utf-8-sig"),
+                d1.download_button("정준상관 CSV", corrs_df.to_csv(index=False).encode("utf-8-sig"),
                                    "cca_canonical_corr.csv", "text/csv")
-                d2.download_button("X 가중치 CSV", xw_full.to_csv(index=False, encoding="utf-8-sig"),
+                d2.download_button("X 가중치 CSV", xw_full.to_csv(index=False).encode("utf-8-sig"),
                                    "cca_x_weights.csv", "text/csv")
-                d3.download_button("Y 가중치 CSV", yw_df.to_csv(index=False, encoding="utf-8-sig"),
+                d3.download_button("Y 가중치 CSV", yw_df.to_csv(index=False).encode("utf-8-sig"),
                                    "cca_y_weights.csv", "text/csv")
                 if st.button("그림(PNG) 파일 생성", key="cca_png"):
                     import io as _io, matplotlib.pyplot as _plt
