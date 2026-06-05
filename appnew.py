@@ -1740,26 +1740,24 @@ elif page == "핵심 변수 선별 효과":
         def _f(m, k, which):  # 안전 추출
             return float((mtop if which == "top" else mfull).get(m, {}).get(k, float("nan")))
 
-        # ── 헤드라인 KPI (정직하게: 향상/유지를 데이터 기준으로 구분)
-        TOL = 0.03                                          # R² 유지 허용폭
+        # ── 헤드라인 KPI (R² 중심)
         d_r2 = {m: _f(m, "R2", "top") - _f(m, "R2", "full") for m in models}
-        n_imp = sum(1 for m in models if d_r2[m] > 1e-9)    # 순수 향상
-        n_keep = sum(1 for m in models if d_r2[m] >= -TOL)  # 향상 + 소폭(±0.03) 유지
         best_m = max(models, key=lambda m: _f(m, "R2", "top")) if models else None
+        avg_full = float(np.mean([_f(m, "R2", "full") for m in models])) if models else float("nan")
+        avg_top = float(np.mean([_f(m, "R2", "top") for m in models])) if models else float("nan")
+        d_avg = avg_top - avg_full
 
         st.markdown('<div class="caption" style="margin-bottom:8px;line-height:1.6">'
                     f'전체 <b>{nf}개</b> 피처에서 RandomForest 중요도 상위 <b>{nt}개</b>로 줄여 재학습한 결과입니다. '
-                    '같은 train/test 분할·같은 하이퍼파라미터로 학습한 사전계산치(재학습 없음).</div>',
+                    '성능 지표는 <b>R²(결정계수, 1에 가까울수록 우수)</b> 기준 · 사전계산치(재학습 없음).</div>',
                     unsafe_allow_html=True)
         k1, k2, k3 = st.columns(3, gap="medium")
-        k1.markdown(metric_card(f"{nf}→{nt}", "피처 수 축소", delta="-핵심만"), unsafe_allow_html=True)
-        k2.markdown(metric_card(f"{n_keep}/{len(models)}", "R² 유지·향상 (±0.03)",
-                                delta=f"+향상 {n_imp}개"), unsafe_allow_html=True)
+        k1.markdown(metric_card(f"{nf}→{nt}", "피처 수 (전체→핵심)"), unsafe_allow_html=True)
+        k2.markdown(metric_card(f"{avg_top:.3f}", "축소 후 평균 R²",
+                                delta=f"{d_avg:+.3f} vs 전체 {avg_full:.3f}"), unsafe_allow_html=True)
         if best_m:
-            bd = d_r2[best_m]
-            k3.markdown(metric_card(f"{_f(best_m, 'R2', 'top'):.3f}", f"축소 최고 R² ({best_m})",
-                                    delta=f"+전체 {_f(best_m, 'R2', 'full'):.3f}" if bd >= 0
-                                          else f"전체 {_f(best_m, 'R2', 'full'):.3f}"),
+            k3.markdown(metric_card(f"{_f(best_m, 'R2', 'top'):.3f}", f"축소 최고 R² · {best_m}",
+                                    delta=f"{d_r2[best_m]:+.3f} vs 전체 {_f(best_m, 'R2', 'full'):.3f}"),
                         unsafe_allow_html=True)
 
         # ── (1) 모델별 R² : 전체 vs 축소 (그룹 막대)
@@ -1813,24 +1811,21 @@ elif page == "핵심 변수 선별 효과":
         else:
             st.caption("중요도 정보가 번들에 없습니다.")
 
-        # ── (3) 한 줄 결론 (실제 pkl 값 기준, 과장 없음)
+        # ── (3) 한 줄 결론 (R² 중심, 모델별 전체→축소 명시)
         if models:
-            imp_models = [m for m in models if d_r2[m] > 1e-9]
-            drop_models = sorted([m for m in models if d_r2[m] < -TOL], key=lambda m: d_r2[m])
             top_join = ", ".join(topf)
-            parts = []
-            if imp_models:
-                parts.append("향상: " + ", ".join(f"{m}(+{d_r2[m]:.3f})" for m in imp_models))
-            if drop_models:
-                parts.append("하락: " + ", ".join(f"{m}({d_r2[m]:.3f})" for m in drop_models))
-            detail = " · ".join(parts) if parts else "모든 모델 ±0.03 이내 유지"
+            rows = " · ".join(
+                f'{m} R² {_f(m, "R2", "full"):.3f}→{_f(m, "R2", "top"):.3f}({d_r2[m]:+.3f})'
+                for m in models)
             st.markdown(
                 '<div class="card" style="margin-top:6px">'
-                f'<div class="body-strong" style="color:var(--ink)">변수를 상위 {nt}개({top_join})로 줄이면 '
-                f'{len(models)}개 모델 중 {n_keep}개가 R²를 ±0.03 이내로 유지(그중 {n_imp}개 향상).</div>'
-                '<div class="caption" style="margin-top:6px;line-height:1.6">'
-                f'{detail}.<br/>소수 핵심 변수만으로 대부분 성능을 유지 → 모델 단순화·해석 용이. '
-                f'축소 후에도 최고 성능은 여전히 <b>{best_m}</b>(R² {_f(best_m, "R2", "top"):.3f}).</div></div>',
+                f'<div class="body-strong" style="color:var(--ink)">변수를 {nf}개 → 핵심 {nt}개로 줄여도 '
+                f'평균 R²는 {avg_full:.3f} → {avg_top:.3f} ({d_avg:+.3f}).</div>'
+                '<div class="caption" style="margin-top:6px;line-height:1.7">'
+                f'모델별 R²(전체→축소): {rows}.<br/>'
+                f'핵심 변수 {nt}개: {top_join}.<br/>'
+                f'변수를 약 1/4로 줄여도 평균 R² 변화는 {d_avg:+.3f}에 그침 → 소수 핵심 변수로 성능 대부분 유지. '
+                f'축소 후 최고 성능은 <b>{best_m}</b>(R² {_f(best_m, "R2", "top"):.3f}).</div></div>',
                 unsafe_allow_html=True)
 
         # ── 비교표 + CSV (한글 안전 utf-8-sig)
