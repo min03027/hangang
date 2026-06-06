@@ -1835,8 +1835,10 @@ elif page == "핵심 변수 선별 효과":
     tile_open("light", anchor="featimp")
     st.markdown('<h2 class="h-display" style="color:var(--ink)">핵심 변수 선별 효과 — VIF 제거 실험</h2>',
                 unsafe_allow_html=True)
-    st.markdown('<p class="lead">표준 ML 중 최고 성능 모델 <b>Ridge</b>로 전체 피처 vs VIF(다중공선성) 제거 피처의 '
-                '예측 성능을 정량 비교하고, 잔차·Q-Q·SHAP·Force·LIME·변수 중요도로 해석합니다.</p>',
+    st.markdown('<p class="lead">선형 모델 <b>Ridge</b>로 전체 피처 vs VIF(다중공선성) 제거 피처의 예측 성능을 '
+                '정량 비교하고, 잔차·Q-Q·SHAP·Force·LIME·변수 중요도로 해석합니다. '
+                '<span style="opacity:.7">(다중공선성은 선형 계수에 직접 영향 → VIF 실험에 가장 적합하고 계수·SHAP·LIME 해석이 명확. '
+                '예측력만 보면 트리계열(ExtraTrees 등)이 더 높습니다 — 모델 예측 페이지 참고.)</span></p>',
                 unsafe_allow_html=True)
     tile_close()
 
@@ -1859,13 +1861,16 @@ elif page == "핵심 변수 선별 효과":
             y = _pm["총이용객"].values.astype(float)
             Zdf = pd.DataFrame(StandardScaler().fit_transform(X), columns=feats)
             keep = list(feats)
+            dropped_vif = []
             while len(keep) > 2:                       # Stepwise VIF (>10 반복 제거)
                 vifs = [variance_inflation_factor(Zdf[keep].values, i) for i in range(len(keep))]
                 j = int(np.argmax(vifs))
                 if vifs[j] > 10:
+                    dropped_vif.append((keep[j], round(float(vifs[j]), 1)))
                     keep.pop(j)
                 else:
                     break
+            max_vif_left = max(variance_inflation_factor(Zdf[keep].values, i) for i in range(len(keep)))
             kf = KFold(5, shuffle=True, random_state=42)
 
             def cvm(cols):
@@ -1882,21 +1887,24 @@ elif page == "핵심 변수 선별 효과":
             sv = np.asarray(ex.shap_values(Z))
             base_val = float(np.ravel(ex.expected_value)[0])
             return dict(feats=feats, keep=keep, m_full=m_full, m_red=m_red, y=y,
-                        Z=Z, rg=rg, sv=sv, base_val=base_val)
+                        Z=Z, rg=rg, sv=sv, base_val=base_val,
+                        dropped_vif=dropped_vif, max_vif_left=float(max_vif_left))
 
         feats0 = tuple(c for c in feature_cols if c in pm.columns)
         R = _featexp(pm, feats0)
         keep, y = R["keep"], R["y"]
         m_full, m_red = R["m_full"], R["m_red"]
         Z, rg, sv, base_val = R["Z"], R["rg"], R["sv"], R["base_val"]
-        dropped = [c for c in feats0 if c not in keep]
+        dropped_vif = R["dropped_vif"]
         nf, nk = len(feats0), len(keep)
 
         # ── 실험 결과: VIF 제거 전후 예측 성능
         st.markdown('<h2 class="h-section">실험 결과 — VIF 제거 전후 예측 성능</h2>', unsafe_allow_html=True)
+        drop_txt = ", ".join(f"{c}(VIF {v})" for c, v in dropped_vif) or "없음"
         st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6">Ridge(α=10) · 5-fold CV(OOF). '
-                    f'Stepwise VIF로 다중공선성(VIF&gt;10) <b>{len(dropped)}개</b> 제거 ({nf}→{nk}개). '
-                    f'제거 변수: {", ".join(dropped) or "없음"}.</div>', unsafe_allow_html=True)
+                    f'Stepwise VIF로 다중공선성(VIF&gt;10) <b>{len(dropped_vif)}개</b>를 한 개씩 반복 제거 '
+                    f'({nf}→{nk}개, 제거 후 최대 VIF {R["max_vif_left"]:.1f}). 시설 변수 다수는 특정 공원 전용(희소)이라 '
+                    f'서로 직교 → VIF가 낮아 유지됩니다.<br/>제거 변수: {drop_txt}.</div>', unsafe_allow_html=True)
         k1, k2, k3 = st.columns(3, gap="medium")
         k1.markdown(metric_card(f"{nf}→{nk}", "피처 수 (전체→VIF후)"), unsafe_allow_html=True)
         k2.markdown(metric_card(f"{m_red['R2']:.3f}", "VIF 후 R²",
@@ -1944,15 +1952,18 @@ elif page == "핵심 변수 선별 효과":
             style_fig(fq)
             st.plotly_chart(fq, use_container_width=True, config={"displayModeBar": False})
 
-        # ── 변수 중요도 (Ridge 표준화 |계수|)
+        # ── 변수 중요도 (Ridge 표준화 |계수|) — 검색량 강조(빨강)
         st.markdown('<h2 class="h-section" style="margin-top:22px">변수 중요도 (Ridge 표준화 |계수|)</h2>',
                     unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin-bottom:8px"><b style="color:#E8505B">빨강 = 검색량</b> '
+                    '(네이버 트렌드)</div>', unsafe_allow_html=True)
         coef = pd.DataFrame({"변수": keep, "표준화계수": rg.coef_})
         coef_top = coef.reindex(coef["표준화계수"].abs().sort_values().index).tail(15)
+        bar_cols = ["#E8505B" if v == "검색량" else TOK["primary"] for v in coef_top["변수"]]
         fi = go.Figure(go.Bar(x=coef_top["표준화계수"].abs(), y=coef_top["변수"], orientation="h",
-                              marker_color=TOK["primary"],
+                              marker_color=bar_cols,
                               text=[f"{abs(v)/1e3:.1f}K" for v in coef_top["표준화계수"]], textposition="outside"))
-        fi.update_layout(title="상위 15개 |표준화 계수|", height=460, xaxis_title="|계수|", margin=dict(l=10, r=60))
+        fi.update_layout(title="상위 15개 |표준화 계수| (빨강=검색량)", height=460, xaxis_title="|계수|", margin=dict(l=10, r=60))
         style_fig(fi)
         st.plotly_chart(fi, use_container_width=True, config={"displayModeBar": False})
 
