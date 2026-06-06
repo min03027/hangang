@@ -624,17 +624,22 @@ def get_Xy(df_in=None):
 # ─────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_hskr():
-    try:
-        from hskr_model import HybridSeasonalKernelRidge  # noqa: F401  (언피클에 필요)
-    except Exception:
-        return None
+    """HSKR 번들 로드. (bundle|None, err|None) 반환 — 실패해도 앱이 죽지 않도록 방어.
+
+    Cloud에서 numpy/sklearn 버전이 pkl 생성 환경과 다르면 pickle.load가
+    ModuleNotFoundError를 던질 수 있어, import·언피클을 모두 try로 감싼다.
+    """
     base = os.path.dirname(__file__)
     for p in (os.path.join(base, "model", "hskr_model.pkl"),
               os.path.join(base, "hskr_model.pkl")):
         if os.path.exists(p):
-            with open(p, "rb") as f:
-                return pickle.load(f)
-    return None
+            try:
+                from hskr_model import HybridSeasonalKernelRidge  # noqa: F401  (언피클에 필요)
+                with open(p, "rb") as f:
+                    return pickle.load(f), None
+            except Exception as e:
+                return None, f"{type(e).__name__}: {e}"
+    return None, "파일 없음: model/hskr_model.pkl (또는 루트)"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -644,17 +649,18 @@ def load_hskr():
 # ─────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_fi():
-    try:
-        from hskr_model import HybridSeasonalKernelRidge  # noqa: F401  (언피클에 필요)
-    except Exception:
-        pass
+    """피처 중요도 번들 로드. (bundle|None, err|None) 반환 — 실패해도 앱이 죽지 않도록 방어."""
     base = os.path.dirname(__file__)
     for p in (os.path.join(base, "model", "fi_models.pkl"),
               os.path.join(base, "fi_models.pkl")):
         if os.path.exists(p):
-            with open(p, "rb") as f:
-                return pickle.load(f)
-    return None
+            try:
+                from hskr_model import HybridSeasonalKernelRidge  # noqa: F401  (언피클에 필요)
+                with open(p, "rb") as f:
+                    return pickle.load(f), None
+            except Exception as e:
+                return None, f"{type(e).__name__}: {e}"
+    return None, "파일 없음: model/fi_models.pkl (또는 루트)"
 
 
 def load_learning_curves():
@@ -1466,26 +1472,67 @@ elif page == "t-test & VIF":
         for f in feats:
             x = monthly[f].values
             t, p = stats.ttest_ind(x[groups == 1], x[groups == 0], equal_var=False)
-            rows.append({"변수": f, "t-stat": round(t, 3), "p-value": round(p, 4),
+            rows.append({"변수": f, "t-stat": float(t), "p-value": float(p),
                          "유의성": "유의" if p < 0.05 else "—"})
         ttest_df = pd.DataFrame(rows).sort_values("p-value")
 
+        sig = ttest_df[ttest_df["유의성"] == "유의"]["변수"].tolist()
+        vif = None
+        if len(sig) >= 2:
+            Xv = monthly[sig].astype(float).fillna(0)
+            vif = pd.DataFrame({
+                "변수": sig,
+                "VIF": [round(variance_inflation_factor(Xv.values, i), 2) for i in range(Xv.shape[1])],
+            }).sort_values("VIF", ascending=False)
+
+        # ── 표: t-test 결과 + VIF
         c1, c2 = st.columns([3, 2], gap="medium")
         with c1:
             st.markdown('<div class="body-strong" style="margin-bottom:10px">t-test 결과</div>', unsafe_allow_html=True)
-            st.dataframe(ttest_df, use_container_width=True, hide_index=True)
+            disp = ttest_df.assign(**{"t-stat": ttest_df["t-stat"].round(3),
+                                      "p-value": ttest_df["p-value"].round(4)})
+            st.dataframe(disp, use_container_width=True, hide_index=True)
         with c2:
-            sig = ttest_df[ttest_df["유의성"] == "유의"]["변수"].tolist()
-            if len(sig) >= 2:
-                X = monthly[sig].astype(float).fillna(0)
-                vif = pd.DataFrame({
-                    "변수": sig,
-                    "VIF": [round(variance_inflation_factor(X.values, i), 2) for i in range(X.shape[1])],
-                })
+            if vif is not None:
                 st.markdown('<div class="body-strong" style="margin-bottom:10px">VIF (공선성)</div>', unsafe_allow_html=True)
                 st.dataframe(vif, use_container_width=True, hide_index=True)
             else:
                 st.markdown('<div class="caption">유의 피처가 부족합니다.</div>', unsafe_allow_html=True)
+
+        # ── 시각화 ①: t-test 선택 (−log₁₀ p, 임계선 p=0.05)
+        st.markdown('<h2 class="h-section" style="margin-top:26px">① t-test 선택 시각화</h2>', unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin-bottom:8px">막대가 빨간 점선(p=0.05)을 넘으면 '
+                    '<b style="color:var(--primary)">유의 변수로 선택</b>됩니다.</div>', unsafe_allow_html=True)
+        tv = ttest_df.copy()
+        tv["neglogp"] = -np.log10(np.clip(tv["p-value"].astype(float), 1e-20, 1.0))
+        tv = tv.sort_values("neglogp")
+        thr = float(-np.log10(0.05))
+        colt = [TOK["primary"] if s == "유의" else TOK["ink_48"] for s in tv["유의성"]]
+        fig_t = go.Figure(go.Bar(x=tv["neglogp"], y=tv["변수"], orientation="h", marker_color=colt,
+                                 text=[f"p={p:.3g}" for p in tv["p-value"]], textposition="outside"))
+        fig_t.add_vline(x=thr, line=dict(color="#E8505B", dash="dash"),
+                        annotation_text="p=0.05", annotation_position="top")
+        fig_t.update_layout(title="변수별 t-test 유의성 (−log₁₀ p · 파랑=선택)", height=max(360, 22 * len(tv)),
+                            xaxis_title="−log₁₀(p-value) — 클수록 유의", margin=dict(l=10, r=70))
+        style_fig(fig_t)
+        st.plotly_chart(fig_t, use_container_width=True, config={"displayModeBar": False})
+
+        # ── 시각화 ②: VIF 다중공선성 (임계선 VIF=10)
+        if vif is not None:
+            st.markdown('<h2 class="h-section" style="margin-top:22px">② VIF 다중공선성 시각화</h2>', unsafe_allow_html=True)
+            st.markdown('<div class="caption" style="margin-bottom:8px">유의 변수 중 VIF가 '
+                        '<b style="color:#E8505B">10 이상</b>이면 공선성이 커 제거 후보입니다.</div>',
+                        unsafe_allow_html=True)
+            vf = vif.sort_values("VIF")
+            colv = ["#E8505B" if v >= 10 else TOK["primary"] for v in vf["VIF"]]
+            fig_v = go.Figure(go.Bar(x=vf["VIF"], y=vf["변수"], orientation="h", marker_color=colv,
+                                     text=[f"{v:.1f}" for v in vf["VIF"]], textposition="outside"))
+            fig_v.add_vline(x=10, line=dict(color="#E8505B", dash="dash"),
+                            annotation_text="VIF=10", annotation_position="top")
+            fig_v.update_layout(title="유의 변수 VIF (빨강=10↑ 제거 후보)", height=max(300, 30 * len(vf)),
+                                xaxis_title="VIF — 낮을수록 독립적", margin=dict(l=10, r=70))
+            style_fig(fig_v)
+            st.plotly_chart(fig_v, use_container_width=True, config={"displayModeBar": False})
     except Exception as e:
         st.markdown(f'<div class="caption">분석을 실행할 수 없습니다 — {e}</div>', unsafe_allow_html=True)
     tile_close()
@@ -1555,16 +1602,18 @@ elif page == "신규 모델 (HSKR)":
                 '기존 Ridge(optuna) 모델을 비교합니다 — 중소 8개 공원.</p>', unsafe_allow_html=True)
     tile_close()
 
-    B = load_hskr()
+    B, hskr_err = load_hskr()
     tile_open("light")
     if B is None:
-        st.markdown("""
+        diag = (f'<br/><br/>진단: <code>{hskr_err}</code>' if hskr_err else "")
+        st.markdown(f"""
         <div class="card">
-          <div class="body-strong">HSKR 번들을 찾을 수 없습니다</div>
+          <div class="body-strong">HSKR 번들을 불러올 수 없습니다</div>
           <div class="caption" style="margin-top:8px; line-height:1.7">
             아래 두 파일을 두고 다시 실행하세요:<br/>
             · <b>hskr_model.py</b> → 레포 루트 (appnew.py와 같은 폴더)<br/>
-            · <b>hskr_model.pkl</b> → <b>model/hskr_model.pkl</b> (또는 루트)
+            · <b>hskr_model.pkl</b> → <b>model/hskr_model.pkl</b> (또는 루트)<br/>
+            <i>ModuleNotFoundError(numpy/sklearn)면 requirements.txt 버전 고정이 필요합니다.</i>{diag}
           </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1714,16 +1763,18 @@ elif page == "핵심 변수 선별 효과":
                 unsafe_allow_html=True)
     tile_close()
 
-    FB = load_fi()
+    FB, fi_err = load_fi()
     tile_open("light")
     if FB is None:
-        st.markdown("""
+        diag = (f'<br/><br/>진단: <code>{fi_err}</code>' if fi_err else "")
+        st.markdown(f"""
         <div class="card">
-          <div class="body-strong">피처 중요도 번들(fi_models.pkl)을 찾을 수 없습니다</div>
+          <div class="body-strong">피처 중요도 번들(fi_models.pkl)을 불러올 수 없습니다</div>
           <div class="caption" style="margin-top:8px; line-height:1.7">
             아래 파일을 두고 다시 실행하세요:<br/>
             · <b>fi_models.pkl</b> → <b>model/fi_models.pkl</b> (또는 루트)<br/>
-            · <b>hskr_model.py</b> → 레포 루트 (HSKR 추정기 언피클에 필요)
+            · <b>hskr_model.py</b> → 레포 루트 (HSKR 추정기 언피클에 필요)<br/>
+            <i>ModuleNotFoundError(numpy/sklearn)면 requirements.txt 버전 고정이 필요합니다.</i>{diag}
           </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1986,11 +2037,17 @@ elif page == "잔차 진단":
         first = next(iter(LC.values()))
         is_perpark = isinstance(first, dict) and "train_sizes" not in first
         if is_perpark:
-            pk = selected_park if selected_park in LC else list(LC.keys())[0]
+            covered = list(LC.keys())
+            if selected_park in LC:
+                pk, note = selected_park, "(사이드바/헤더에서 공원 변경 가능)"
+            else:
+                pk = covered[0]
+                note = (f'— <b style="color:#E8505B">{selected_park}</b>은(는) learning curve에 없어 '
+                        f'<b>{pk}</b>로 대체 표시합니다 (대형 3개 공원 제외). '
+                        f'커버 공원: {", ".join(c.replace("한강공원", "") for c in covered)}')
             curves = LC[pk]
             st.markdown(f'<div class="caption" style="margin-bottom:6px">기준 공원: '
-                        f'<b style="color:var(--primary)">{pk}</b> '
-                        f'(사이드바/헤더에서 공원 변경 가능)</div>', unsafe_allow_html=True)
+                        f'<b style="color:var(--primary)">{pk}</b> {note}</div>', unsafe_allow_html=True)
         else:
             curves = LC
         names = list(curves.keys())
