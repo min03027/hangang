@@ -682,6 +682,61 @@ def load_learning_curves():
     return None, "파일 없음: " + " / ".join(cands)
 
 
+@st.cache_resource
+def load_model_compare():
+    """모델 예측 페이지용 model_compare.pkl 로드. (obj|None, err|None)."""
+    base = os.path.dirname(__file__)
+    for p in (os.path.join(base, "model", "model_compare.pkl"),
+              os.path.join(base, "model_compare.pkl")):
+        if os.path.exists(p):
+            try:
+                with open(p, "rb") as f:
+                    return pickle.load(f), None
+            except Exception as e:
+                return None, f"{type(e).__name__}: {e}"
+    return None, "파일 없음: model/model_compare.pkl"
+
+
+def _plot_lc(name, d, col):
+    """Learning curve 1개를 col에 그림 (모델 예측·진단 공용 모듈레벨 헬퍼)."""
+    ts = np.asarray(d["train_sizes"], float)
+    tr = np.asarray(d["train_scores"], float); va = np.asarray(d["val_scores"], float)
+    tr_m = tr.mean(1) if tr.ndim == 2 else tr
+    va_m = va.mean(1) if va.ndim == 2 else va
+    va_s = va.std(1) if va.ndim == 2 else np.zeros_like(va_m)
+    flc = go.Figure()
+    flc.add_trace(go.Scatter(x=np.concatenate([ts, ts[::-1]]),
+                             y=np.concatenate([va_m + va_s, (va_m - va_s)[::-1]]),
+                             fill="toself", fillcolor="rgba(0,102,204,0.12)",
+                             line=dict(color="rgba(0,0,0,0)"), showlegend=False, hoverinfo="skip"))
+    flc.add_trace(go.Scatter(x=ts, y=tr_m, name="학습", mode="lines+markers",
+                             line=dict(color=TOK["ink"], width=2)))
+    flc.add_trace(go.Scatter(x=ts, y=va_m, name="검증", mode="lines+markers",
+                             line=dict(color=TOK["primary"], width=2.4)))
+    flc.update_layout(title=name, height=320, xaxis_title="학습 표본수", yaxis_title="R²",
+                      legend=dict(orientation="h", y=1.16))
+    style_fig(flc)
+    col.plotly_chart(flc, use_container_width=True, config={"displayModeBar": False})
+
+
+def lime_explain(predict_fn, x_row, X_bg, feature_names, n_samples=600, n_top=12, seed=0):
+    """경량 LIME(추가 의존성 0): x_row 주변 perturbation→거리가중 Ridge 국소 선형근사.
+    반환: DataFrame(변수, 국소기여) 내림차순(|기여|), 상위 n_top개."""
+    from sklearn.linear_model import Ridge as _Ridge
+    rng = np.random.default_rng(seed)
+    x = np.asarray(x_row, float)
+    sd = np.asarray(X_bg, float).std(0); sd[sd == 0] = 1.0
+    Z = rng.normal(x, sd, size=(n_samples, len(x)))
+    Z[0] = x
+    yz = np.asarray(predict_fn(Z), float)
+    dist = np.sqrt((((Z - x) / sd) ** 2).sum(1))
+    w = np.exp(-(dist ** 2) / (2 * (np.median(dist) + 1e-9) ** 2))
+    Zs = (Z - Z.mean(0)) / (Z.std(0) + 1e-9)
+    loc = _Ridge(alpha=1.0).fit(Zs, yz, sample_weight=w)
+    out = pd.DataFrame({"변수": list(feature_names), "국소기여": loc.coef_})
+    return out.reindex(out["국소기여"].abs().sort_values(ascending=False).index).head(n_top).reset_index(drop=True)
+
+
 @st.cache_data
 def compute_cca_vif(_df, cols, target="총이용객", vif_threshold=10.0, key=None):
     """VIF로 공선성 제거 후, 각 피처 vs target 의 CCA(1성분) + 상관(피어슨/스피어만/켄달).
@@ -861,14 +916,12 @@ with st.sidebar:
         ("EDA",            "chart"),
         ("t-test & VIF",   "scatter"),
         ("모델 예측",       "model"),
+        ("신규 모델 (HSKR)", "spark"),
+        ("핵심 변수 선별 효과", "model"),
         ("예측 시뮬레이터",  "boot"),
-        ("잔차 진단",       "diag"),
-        ("SHAP 해석",       "shap"),
         ("Conformal",      "interval"),
         ("Bootstrap CI",   "boot"),
         ("Nested CV",      "cv"),
-        ("신규 모델 (HSKR)", "spark"),
-        ("핵심 변수 선별 효과", "model"),
     ]
     page = st.radio("분석", [p[0] for p in PAGES], key="page", label_visibility="visible")
 
@@ -917,12 +970,11 @@ if page == "개요":
 # ── 헤더 행: 미니맵(2칸) + 공원/분석 선택 카드 (클릭 가능)
 PAGE_DESC = {
     "개요": "전체 요약 · 한눈에 보기", "EDA": "탐색적 데이터 분석",
-    "t-test & VIF": "피처 선별 · 공선성", "모델 예측": "RandomForest 예측",
-    "예측 시뮬레이터": "입력 → 실시간 예측", "잔차 진단": "Q-Q · 정규성",
-    "SHAP 해석": "변수 기여도", "Conformal": "예측 구간",
+    "t-test & VIF": "피처 선별 · 공선성", "모델 예측": "전체 모델 비교 · 학습곡선",
+    "예측 시뮬레이터": "입력 → 실시간 예측", "Conformal": "예측 구간",
     "Bootstrap CI": "성능 신뢰구간", "Nested CV": "일반화 추정",
-    "신규 모델 (HSKR)": "HSKR vs Ridge",
-    "핵심 변수 선별 효과": "핵심 피처로 축소 재학습",
+    "신규 모델 (HSKR)": "HSKR vs Ridge · 11공원",
+    "핵심 변수 선별 효과": "VIF 실험 · SHAP · LIME · 잔차",
 }
 
 
@@ -1050,15 +1102,13 @@ if page == "개요":
     FEATURES = [
         ("EDA",            "chart",    "월별 추이 · 계절성 · 변수 분포"),
         ("t-test & VIF",   "scatter",  "유의 피처 선별 · 공선성 제거"),
-        ("모델 예측",       "model",    "RandomForest 예측 · 변수 중요도"),
+        ("모델 예측",       "model",    "전체 모델 성능 비교 · 학습곡선"),
+        ("신규 모델 (HSKR)", "spark",    "내가 만든 HSKR vs 기존 · 11공원"),
+        ("핵심 변수 선별 효과", "model",  "VIF 전후 + 잔차·SHAP·LIME·중요도"),
         ("예측 시뮬레이터",  "boot",     "입력 조정 → 실시간 예측"),
-        ("잔차 진단",       "diag",     "Q-Q · 등분산 · 정규성 진단"),
-        ("SHAP 해석",       "shap",     "전역 변수 기여도 해석"),
         ("Conformal",      "interval", "분포가정 없는 예측구간"),
         ("Bootstrap CI",   "boot",     "성능지표 신뢰구간"),
         ("Nested CV",      "cv",       "과적합 없는 일반화 추정"),
-        ("신규 모델 (HSKR)", "spark",    "내가 만든 HSKR vs 기존 모델"),
-        ("핵심 변수 선별 효과", "model",  "전체 vs 핵심 피처 재학습 비교"),
     ]
     for r in range(0, len(FEATURES), 3):
         cols = st.columns(3, gap="medium")
@@ -1539,58 +1589,81 @@ elif page == "t-test & VIF":
 
 
 elif page == "모델 예측":
-    from sklearn.metrics import r2_score, mean_absolute_error
-
     tile_open("light", anchor="model")
     st.markdown("""
-    <h2 class="h-display" style="color:var(--ink)">공원·월 단위로, 더 정교하게.</h2>
-    <p class="lead">11개 공원 × 월별 815건을 RandomForest로 학습해 이용객을 예측합니다.</p>
+    <h2 class="h-display" style="color:var(--ink)">돌려본 모든 모델, 한눈에.</h2>
+    <p class="lead">공원·월 815건에서 5개 표준 모델 + HSKR의 성능 지표와 학습 곡선을 비교합니다.</p>
     """, unsafe_allow_html=True)
     tile_close()
 
+    MC, mc_err = load_model_compare()
     tile_open("light")
-    st.markdown('<h2 class="h-section">모델 예측 결과</h2>', unsafe_allow_html=True)
+    st.markdown('<h2 class="h-section">전체 모델 성능 비교</h2>', unsafe_allow_html=True)
+    if MC is None:
+        st.markdown(f"""
+        <div class="card">
+          <div class="body-strong">모델 비교 데이터를 불러올 수 없습니다</div>
+          <div class="caption" style="margin-top:8px; line-height:1.7">
+            <b>build_model_compare.py</b> 실행으로 <b>model/model_compare.pkl</b>을 생성하세요.<br/>
+            진단: <code>{mc_err}</code>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        mm = MC["metrics"]
+        models = list(MC["models"])
+        best = max(models, key=lambda m: mm[m]["R2"])
 
-    model = bundle["model"]
-    y_all = bundle["y"]
-    oof = bundle["oof"]                       # 폴드별 검증 예측 (전 815건, 정직)
-    oof_r2  = r2_score(y_all, oof)
-    oof_mae = mean_absolute_error(y_all, oof)
-    cv_mean, cv_std = float(bundle["cv"].mean()), float(bundle["cv"].std())
+        k1, k2, k3 = st.columns(3, gap="medium")
+        k1.markdown(metric_card(f"{mm[best]['R2']:.3f}", f"최고 CV R² · {best}"), unsafe_allow_html=True)
+        k2.markdown(metric_card(f"{mm[best]['RMSE']/1e4:.1f}만", f"{best} RMSE (낮을수록 우수)"),
+                    unsafe_allow_html=True)
+        k3.markdown(metric_card(f"{MC['n_samples']:,}건", f"공원-월 · 피처 {MC['n_features']}"),
+                    unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin:10px 0 16px 0">5-fold 교차검증(OOF) · 공원 원핫 + '
+                    '검색량 + 계절성 + 시설 피처. HSKR은 공원별 모델이라 테스트 구간 풀링값(신규 모델 페이지 참고).</div>',
+                    unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns(3, gap="medium")
-    c1.markdown(metric_card(f"{cv_mean:.3f}", "5-fold CV R²",
-                            delta=f"+±{cv_std:.3f}"), unsafe_allow_html=True)
-    c2.markdown(metric_card(f"{oof_mae/1000:.1f}K", "검증 MAE (OOF)"), unsafe_allow_html=True)
-    c3.markdown(metric_card("RandomForest", f"모델 ({len(y_all):,}건)"), unsafe_allow_html=True)
-    st.markdown(f'<div class="caption" style="margin-top:12px">공원-월 {len(y_all):,}건 · '
-                f'5-fold 교차검증 R² {cv_mean:.3f} (±{cv_std:.3f}) · 폴드별 검증 예측 결합 R² {oof_r2:.3f} · '
-                f'공원 원핫 + 공원별 검색량 + 계절성 + 시설 피처.</div>',
-                unsafe_allow_html=True)
+        ca, cb = st.columns(2, gap="medium")
+        with ca:
+            fr = go.Figure(go.Bar(x=[mm[m]["R2"] for m in models], y=models, orientation="h",
+                                  marker_color=[TOK["primary"] if m == best else TOK["ink_48"] for m in models],
+                                  text=[f"{mm[m]['R2']:.3f}" for m in models], textposition="outside"))
+            fr.update_layout(title="CV R² (높을수록 우수)", height=360, xaxis_title="R²", margin=dict(r=60))
+            style_fig(fr)
+            st.plotly_chart(fr, use_container_width=True, config={"displayModeBar": False})
+        with cb:
+            fe = go.Figure(go.Bar(x=[mm[m]["RMSE"] / 1e4 for m in models], y=models, orientation="h",
+                                  marker_color=[TOK["primary"] if m == best else TOK["ink_48"] for m in models],
+                                  text=[f"{mm[m]['RMSE']/1e4:.1f}" for m in models], textposition="outside"))
+            fe.update_layout(title="CV RMSE(만, 낮을수록 우수)", height=360, xaxis_title="RMSE(만)", margin=dict(r=60))
+            style_fig(fe)
+            st.plotly_chart(fe, use_container_width=True, config={"displayModeBar": False})
 
-    st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
+        rows = [{"모델": m, "R²": round(mm[m]["R2"], 3), "R²_std": round(mm[m].get("R2_std", 0.0), 3),
+                 "RMSE(만)": round(mm[m]["RMSE"] / 1e4, 1), "MAE(만)": round(mm[m]["MAE"] / 1e4, 1)}
+                for m in models]
+        hp = MC.get("hskr_pooled")
+        if hp:
+            rows.append({"모델": "HSKR (공원별 풀링)", "R²": round(hp["R2"], 3), "R²_std": None,
+                         "RMSE(만)": round(hp["RMSE"] / 1e4, 1), "MAE(만)": round(hp["MAE"] / 1e4, 1)})
+        cmp_df = pd.DataFrame(rows)
+        st.dataframe(cmp_df, use_container_width=True, hide_index=True)
+        st.download_button("⬇️ 모델 성능표 CSV", cmp_df.to_csv(index=False).encode("utf-8-sig"),
+                           "model_compare.csv", "text/csv")
 
-    # 실측 vs 예측 산점도 (폴드별 검증 예측, 전 표본)
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=y_all, y=oof, mode="markers",
-                             marker=dict(color=TOK["primary"], size=6, opacity=0.55), name="검증 예측"))
-    lim = [float(min(y_all.min(), oof.min())), float(max(y_all.max(), oof.max()))]
-    fig.add_trace(go.Scatter(x=lim, y=lim, mode="lines",
-                             line=dict(color=TOK["ink"], dash="dot"), name="완벽 예측"))
-    fig.update_layout(title="실측 vs 검증 예측 (전 815건, 폴드 OOF)",
-                      xaxis_title="실측 이용객", yaxis_title="예측 이용객", height=440)
-    style_fig(fig)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-    # 피처 중요도 Top 15
-    st.markdown('<h2 class="h-section" style="margin-top:32px">변수 중요도 (RandomForest)</h2>', unsafe_allow_html=True)
-    imp = (pd.DataFrame({"변수": bundle["names"], "중요도": model.named_steps["rf"].feature_importances_})
-           .sort_values("중요도").tail(15))
-    figi = go.Figure(go.Bar(x=imp["중요도"], y=imp["변수"], orientation="h",
-                            marker_color=TOK["primary"]))
-    figi.update_layout(title="상위 15개 변수 기여도", height=480)
-    style_fig(figi)
-    st.plotly_chart(figi, use_container_width=True, config={"displayModeBar": False})
+        st.markdown('<h2 class="h-section" style="margin-top:30px">모델별 Learning Curve</h2>',
+                    unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin-bottom:10px">훈련 표본 수를 늘려가며 학습·검증 R²를 봅니다. '
+                    '두 곡선이 수렴하면 데이터 충분, 갭이 크면 과적합.</div>', unsafe_allow_html=True)
+        lcs = MC["lc"]
+        names = list(lcs.keys())
+        for r in range(0, len(names), 3):
+            rowm = names[r:r + 3]
+            lcols = st.columns(len(rowm), gap="medium")
+            for nm, col in zip(rowm, lcols):
+                _plot_lc(nm, lcs[nm], col)
+        st.caption("※ model/model_compare.pkl 사전계산. HSKR 학습곡선은 공원별이라 신규 모델 페이지에서 확인.")
     tile_close()
 
 
@@ -1599,7 +1672,7 @@ elif page == "신규 모델 (HSKR)":
     st.markdown('<h2 class="h-display" style="color:var(--ink)">신규 HSKR vs 기존 Ridge</h2>',
                 unsafe_allow_html=True)
     st.markdown('<p class="lead">직접 구현한 Hybrid Seasonal Kernel Ridge(계절 푸리에 + RBF 커널)와 '
-                '기존 Ridge(optuna) 모델을 비교합니다 — 중소 8개 공원.</p>', unsafe_allow_html=True)
+                '기존 Ridge 모델을 공원별로 비교합니다 — 전 11개 공원.</p>', unsafe_allow_html=True)
     tile_close()
 
     B, hskr_err = load_hskr()
@@ -1627,27 +1700,30 @@ elif page == "신규 모델 (HSKR)":
             mm = B["per_park"][p]["metrics"]
             return (mm[bn]["RMSE"] - mm["HSKR"]["RMSE"]) / mm[bn]["RMSE"] * 100 if mm[bn]["RMSE"] else 0.0
 
-        # ── 헤드라인: 상위 3개 제외 8개 공원 전체(풀링) 성능
+        # ── 헤드라인: 전 11개 공원 전체(풀링) 성능
         yt_all = np.concatenate([np.asarray(B["per_park"][p]["y_test"], float) for p in parks])
         hk_all = np.concatenate([np.asarray(B["per_park"][p]["hskr_pred_test"], float) for p in parks])
         rg_all = np.concatenate([np.asarray(B["per_park"][p]["base_pred_test"][bn], float) for p in parks])
         hk_r2, hk_rmse = r2_score(yt_all, hk_all), mean_squared_error(yt_all, hk_all) ** 0.5
         rg_r2, rg_rmse = r2_score(yt_all, rg_all), mean_squared_error(yt_all, rg_all) ** 0.5
         ov_red = (rg_rmse - hk_rmse) / rg_rmse * 100 if rg_rmse else 0.0
+        n_win = sum(1 for p in parks if _red(p) > 0)
 
-        st.markdown('<div class="caption" style="margin-bottom:8px;line-height:1.6">HSKR의 핵심: '
-                    '이용객 <b>상위 3개(뚝섬·여의도·반포)를 제외</b>한 <b>8개 중소 공원 전용</b> 모델입니다. '
-                    '아래는 8개 공원 테스트 구간을 합친 <b>전체 성능</b> (동일 구간의 기존 Ridge와 비교).</div>',
+        st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6">HSKR(계절+커널)을 '
+                    f'<b>전 {len(parks)}개 공원</b>에 공원별로 학습해 기존 Ridge와 비교합니다. '
+                    f'HSKR이 <b>{n_win}/{len(parks)}개 공원</b>에서 RMSE를 낮췄습니다. 아래는 테스트 구간을 합친 '
+                    f'<b>전체 성능</b> — 풀링 R²는 공원 간 스케일 차(수만~수백만)로 낮게 나오므로 '
+                    f'<b>RMSE 감소율</b>이 핵심 지표입니다.</div>',
                     unsafe_allow_html=True)
         g1, g2, g3 = st.columns(3, gap="medium")
         g1.markdown(metric_card(f"+{ov_red:.1f}%", "전체 RMSE 감소율", delta="+vs Ridge"), unsafe_allow_html=True)
-        g2.markdown(metric_card(f"{hk_r2:.3f}", "전체 R² (HSKR)", delta=f"+Ridge {rg_r2:.3f}"), unsafe_allow_html=True)
-        g3.markdown(metric_card(f"{hk_rmse/1e4:.1f}만", "전체 RMSE (HSKR)",
+        g2.markdown(metric_card(f"{hk_rmse/1e4:.1f}만", "전체 RMSE (HSKR)",
                                 delta=f"+Ridge {rg_rmse/1e4:.1f}만"), unsafe_allow_html=True)
+        g3.markdown(metric_card(f"{n_win}/{len(parks)}", "HSKR 우세 공원 수"), unsafe_allow_html=True)
         fov = go.Figure(go.Bar(x=[hk_rmse / 1e4, rg_rmse / 1e4], y=["HSKR", "Ridge(기존)"], orientation="h",
                                marker_color=[TOK["primary"], "#E8505B"],
                                text=[f"{hk_rmse/1e4:.1f}만", f"{rg_rmse/1e4:.1f}만"], textposition="outside"))
-        fov.update_layout(title="8개 공원 전체 RMSE (낮을수록 우수)", height=240, xaxis_title="RMSE(만)",
+        fov.update_layout(title=f"{len(parks)}개 공원 전체 RMSE (낮을수록 우수)", height=240, xaxis_title="RMSE(만)",
                           yaxis=dict(autorange="reversed"))
         style_fig(fov)
         st.plotly_chart(fov, use_container_width=True, config={"displayModeBar": False})
@@ -1658,7 +1734,7 @@ elif page == "신규 모델 (HSKR)":
 
         # 공원 선택 (상세)
         d_idx = parks.index(selected_park) if selected_park in parks else (parks.index(core[0]) if core else 0)
-        cpark = st.selectbox("공원 (HSKR 커버 8개)", parks, index=d_idx)
+        cpark = st.selectbox("공원 (전 11개 공원)", parks, index=d_idx)
         pp = B["per_park"][cpark]
         met = pp["metrics"]
         red = _red(cpark)
@@ -1749,159 +1825,195 @@ elif page == "신규 모델 (HSKR)":
                         f'({" · ".join(p.replace("한강공원","") for p in core)}) 평균 RMSE 감소율 '
                         f'<b style="color:var(--primary)">+{avg_red:.1f}%</b> (HSKR vs Ridge).</div>',
                         unsafe_allow_html=True)
-        st.caption("※ HSKR은 중소 8개 공원만 커버(대형 뚝섬·여의도·반포 제외). 값은 번들 테스트 구간 사전계산치, "
+        st.caption("※ 전 11개 공원을 공원별로 학습(시계열 holdout). 대형·구조변화 공원(뚝섬·여의도 등)은 "
+                   "예측이 어려워 R²가 음수일 수 있으나 HSKR이 Ridge 대비 RMSE를 줄입니다. "
                    "Ridge는 동일 테스트 구간의 기존 Ridge 베이스라인.")
     tile_close()
 
 
 elif page == "핵심 변수 선별 효과":
     tile_open("light", anchor="featimp")
-    st.markdown('<h2 class="h-display" style="color:var(--ink)">전체 피처 vs 핵심 피처 재학습</h2>',
+    st.markdown('<h2 class="h-display" style="color:var(--ink)">핵심 변수 선별 효과 — VIF 제거 실험</h2>',
                 unsafe_allow_html=True)
-    st.markdown('<p class="lead">RandomForest 변수 중요도로 <b>상위 핵심 피처</b>만 골라, 같은 분할·같은 모델로 '
-                '다시 학습했을 때 성능이 유지/향상되는지 비교합니다 — 변수를 줄여도 충분한지 확인.</p>',
+    st.markdown('<p class="lead">표준 ML 중 최고 성능 모델 <b>Ridge</b>로 전체 피처 vs VIF(다중공선성) 제거 피처의 '
+                '예측 성능을 정량 비교하고, 잔차·Q-Q·SHAP·Force·LIME·변수 중요도로 해석합니다.</p>',
                 unsafe_allow_html=True)
     tile_close()
 
-    FB, fi_err = load_fi()
     tile_open("light")
-    if FB is None:
-        diag = (f'<br/><br/>진단: <code>{fi_err}</code>' if fi_err else "")
-        st.markdown(f"""
-        <div class="card">
-          <div class="body-strong">피처 중요도 번들(fi_models.pkl)을 불러올 수 없습니다</div>
-          <div class="caption" style="margin-top:8px; line-height:1.7">
-            아래 파일을 두고 다시 실행하세요:<br/>
-            · <b>fi_models.pkl</b> → <b>model/fi_models.pkl</b> (또는 루트)<br/>
-            · <b>hskr_model.py</b> → 레포 루트 (HSKR 추정기 언피클에 필요)<br/>
-            <i>ModuleNotFoundError(numpy/sklearn)면 requirements.txt 버전 고정이 필요합니다.</i>{diag}
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        imp = dict(FB.get("importance", {}))
-        topf = list(FB.get("top_features", []))
-        allf = list(FB.get("all_features", []))
-        mfull, mtop = FB.get("metrics_full", {}), FB.get("metrics_top", {})
-        order_pref = ["Ridge", "RandomForest", "GradientBoosting", "HSKR"]
-        models = [m for m in order_pref if m in mfull and m in mtop]
-        models += [m for m in mfull if m not in models and m in mtop]
-        nf, nt = len(allf), len(topf)
+    try:
+        from scipy.stats import probplot
+        import shap
+        import matplotlib.pyplot as plt
 
-        def _f(m, k, which):  # 안전 추출
-            return float((mtop if which == "top" else mfull).get(m, {}).get(k, float("nan")))
+        @st.cache_data(show_spinner="VIF 제거 실험·SHAP 계산 중...")
+        def _featexp(_pm, feats):
+            from sklearn.linear_model import Ridge
+            from sklearn.preprocessing import StandardScaler
+            from sklearn.pipeline import Pipeline
+            from sklearn.model_selection import KFold, cross_val_predict
+            from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+            from statsmodels.stats.outliers_influence import variance_inflation_factor
+            feats = list(feats)
+            X = _pm[feats].astype(float).fillna(0)
+            y = _pm["총이용객"].values.astype(float)
+            Zdf = pd.DataFrame(StandardScaler().fit_transform(X), columns=feats)
+            keep = list(feats)
+            while len(keep) > 2:                       # Stepwise VIF (>10 반복 제거)
+                vifs = [variance_inflation_factor(Zdf[keep].values, i) for i in range(len(keep))]
+                j = int(np.argmax(vifs))
+                if vifs[j] > 10:
+                    keep.pop(j)
+                else:
+                    break
+            kf = KFold(5, shuffle=True, random_state=42)
 
-        # ── 헤드라인 KPI (R² 중심)
-        d_r2 = {m: _f(m, "R2", "top") - _f(m, "R2", "full") for m in models}
-        best_m = max(models, key=lambda m: _f(m, "R2", "top")) if models else None
-        avg_full = float(np.mean([_f(m, "R2", "full") for m in models])) if models else float("nan")
-        avg_top = float(np.mean([_f(m, "R2", "top") for m in models])) if models else float("nan")
-        d_avg = avg_top - avg_full
+            def cvm(cols):
+                pipe = Pipeline([("sc", StandardScaler()), ("rg", Ridge(alpha=10.0))])
+                oof = cross_val_predict(pipe, X[cols], y, cv=kf)
+                return {"R2": float(r2_score(y, oof)), "RMSE": float(mean_squared_error(y, oof) ** 0.5),
+                        "MAE": float(mean_absolute_error(y, oof)), "oof": oof}
 
-        st.markdown('<div class="caption" style="margin-bottom:8px;line-height:1.6">'
-                    f'전체 <b>{nf}개</b> 피처에서 RandomForest 중요도 상위 <b>{nt}개</b>로 줄여 재학습한 결과입니다. '
-                    '성능 지표는 <b>R²(결정계수, 1에 가까울수록 우수)</b> 기준 · 사전계산치(재학습 없음).</div>',
-                    unsafe_allow_html=True)
+            m_full, m_red = cvm(feats), cvm(keep)
+            sc = StandardScaler().fit(X[keep].values)
+            Z = sc.transform(X[keep].values)
+            rg = Ridge(alpha=10.0).fit(Z, y)
+            ex = shap.LinearExplainer(rg, Z)
+            sv = np.asarray(ex.shap_values(Z))
+            base_val = float(np.ravel(ex.expected_value)[0])
+            return dict(feats=feats, keep=keep, m_full=m_full, m_red=m_red, y=y,
+                        Z=Z, rg=rg, sv=sv, base_val=base_val)
+
+        feats0 = tuple(c for c in feature_cols if c in pm.columns)
+        R = _featexp(pm, feats0)
+        keep, y = R["keep"], R["y"]
+        m_full, m_red = R["m_full"], R["m_red"]
+        Z, rg, sv, base_val = R["Z"], R["rg"], R["sv"], R["base_val"]
+        dropped = [c for c in feats0 if c not in keep]
+        nf, nk = len(feats0), len(keep)
+
+        # ── 실험 결과: VIF 제거 전후 예측 성능
+        st.markdown('<h2 class="h-section">실험 결과 — VIF 제거 전후 예측 성능</h2>', unsafe_allow_html=True)
+        st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6">Ridge(α=10) · 5-fold CV(OOF). '
+                    f'Stepwise VIF로 다중공선성(VIF&gt;10) <b>{len(dropped)}개</b> 제거 ({nf}→{nk}개). '
+                    f'제거 변수: {", ".join(dropped) or "없음"}.</div>', unsafe_allow_html=True)
         k1, k2, k3 = st.columns(3, gap="medium")
-        k1.markdown(metric_card(f"{nf}→{nt}", "피처 수 (전체→핵심)"), unsafe_allow_html=True)
-        k2.markdown(metric_card(f"{avg_top:.3f}", "축소 후 평균 R²",
-                                delta=f"{d_avg:+.3f} vs 전체 {avg_full:.3f}"), unsafe_allow_html=True)
-        if best_m:
-            k3.markdown(metric_card(f"{_f(best_m, 'R2', 'top'):.3f}", f"축소 최고 R² · {best_m}",
-                                    delta=f"{d_r2[best_m]:+.3f} vs 전체 {_f(best_m, 'R2', 'full'):.3f}"),
-                        unsafe_allow_html=True)
-
-        # ── (1) 모델별 R² : 전체 vs 축소 (그룹 막대)
-        st.markdown('<h2 class="h-section" style="margin-top:20px">모델별 R² — 전체 vs 축소 피처</h2>',
+        k1.markdown(metric_card(f"{nf}→{nk}", "피처 수 (전체→VIF후)"), unsafe_allow_html=True)
+        k2.markdown(metric_card(f"{m_red['R2']:.3f}", "VIF 후 R²",
+                                delta=f"{m_red['R2']-m_full['R2']:+.3f} vs 전체 {m_full['R2']:.3f}"),
                     unsafe_allow_html=True)
-        figr = go.Figure()
-        figr.add_trace(go.Bar(name=f"전체 ({nf}개)", x=models, y=[_f(m, "R2", "full") for m in models],
-                              marker_color=TOK["ink_48"],
-                              text=[f"{_f(m, 'R2', 'full'):.3f}" for m in models], textposition="outside"))
-        figr.add_trace(go.Bar(name=f"축소 ({nt}개)", x=models, y=[_f(m, "R2", "top") for m in models],
+        k3.markdown(metric_card(f"{m_red['RMSE']/1e4:.1f}만", "VIF 후 RMSE",
+                                delta=f"{(m_red['RMSE']-m_full['RMSE'])/1e4:+.1f}만 vs 전체"),
+                    unsafe_allow_html=True)
+        exp_df = pd.DataFrame([
+            {"구분": f"전체 ({nf}개)", "R²": round(m_full["R2"], 4),
+             "RMSE(만)": round(m_full["RMSE"] / 1e4, 1), "MAE(만)": round(m_full["MAE"] / 1e4, 1)},
+            {"구분": f"VIF 제거 ({nk}개)", "R²": round(m_red["R2"], 4),
+             "RMSE(만)": round(m_red["RMSE"] / 1e4, 1), "MAE(만)": round(m_red["MAE"] / 1e4, 1)},
+        ])
+        ca, cb = st.columns([2, 3], gap="medium")
+        ca.dataframe(exp_df, use_container_width=True, hide_index=True)
+        with cb:
+            fx = go.Figure()
+            fx.add_trace(go.Bar(name="R²", x=["전체", "VIF 제거"], y=[m_full["R2"], m_red["R2"]],
+                                marker_color=TOK["primary"],
+                                text=[f"{m_full['R2']:.3f}", f"{m_red['R2']:.3f}"], textposition="outside"))
+            fx.update_layout(title="VIF 제거 전후 CV R²", height=300, yaxis_title="R²")
+            style_fig(fx)
+            st.plotly_chart(fx, use_container_width=True, config={"displayModeBar": False})
+
+        # ── 잔차 진단: Residual + Q-Q
+        resid = y - m_red["oof"]
+        st.markdown('<h2 class="h-section" style="margin-top:26px">잔차 진단 (VIF 후 Ridge · OOF)</h2>',
+                    unsafe_allow_html=True)
+        d1, d2 = st.columns(2, gap="medium")
+        with d1:
+            fr = go.Figure(go.Scatter(x=m_red["oof"], y=resid, mode="markers",
+                                      marker=dict(color=TOK["primary"], size=6, opacity=0.6)))
+            fr.add_hline(y=0, line=dict(color=TOK["ink"], dash="dot"))
+            fr.update_layout(title="잔차 vs 예측값", xaxis_title="예측", yaxis_title="잔차", height=380)
+            style_fig(fr)
+            st.plotly_chart(fr, use_container_width=True, config={"displayModeBar": False})
+        with d2:
+            (osm, osr), _ = probplot(resid, dist="norm")
+            fq = go.Figure()
+            fq.add_trace(go.Scatter(x=osm, y=osr, mode="markers", marker=dict(color=TOK["primary"], size=6)))
+            fq.add_trace(go.Scatter(x=osm, y=osm * np.std(resid), mode="lines",
+                                    line=dict(color=TOK["ink"], dash="dot")))
+            fq.update_layout(title="Q-Q Plot (잔차 정규성)", showlegend=False, height=380)
+            style_fig(fq)
+            st.plotly_chart(fq, use_container_width=True, config={"displayModeBar": False})
+
+        # ── 변수 중요도 (Ridge 표준화 |계수|)
+        st.markdown('<h2 class="h-section" style="margin-top:22px">변수 중요도 (Ridge 표준화 |계수|)</h2>',
+                    unsafe_allow_html=True)
+        coef = pd.DataFrame({"변수": keep, "표준화계수": rg.coef_})
+        coef_top = coef.reindex(coef["표준화계수"].abs().sort_values().index).tail(15)
+        fi = go.Figure(go.Bar(x=coef_top["표준화계수"].abs(), y=coef_top["변수"], orientation="h",
                               marker_color=TOK["primary"],
-                              text=[f"{_f(m, 'R2', 'top'):.3f}" for m in models], textposition="outside"))
-        figr.update_layout(barmode="group", height=360, yaxis_title="R² (높을수록 우수)",
-                           legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0))
-        style_fig(figr)
-        st.plotly_chart(figr, use_container_width=True, config={"displayModeBar": False})
+                              text=[f"{abs(v)/1e3:.1f}K" for v in coef_top["표준화계수"]], textposition="outside"))
+        fi.update_layout(title="상위 15개 |표준화 계수|", height=460, xaxis_title="|계수|", margin=dict(l=10, r=60))
+        style_fig(fi)
+        st.plotly_chart(fi, use_container_width=True, config={"displayModeBar": False})
 
-        # ── RMSE : 전체 vs 축소 (그룹 막대, 만 단위)
-        st.markdown('<h2 class="h-section" style="margin-top:14px">모델별 RMSE — 전체 vs 축소 피처</h2>',
-                    unsafe_allow_html=True)
-        fige = go.Figure()
-        fige.add_trace(go.Bar(name=f"전체 ({nf}개)", x=models, y=[_f(m, "RMSE", "full") / 1e4 for m in models],
-                              marker_color=TOK["ink_48"],
-                              text=[f"{_f(m, 'RMSE', 'full')/1e4:.1f}만" for m in models], textposition="outside"))
-        fige.add_trace(go.Bar(name=f"축소 ({nt}개)", x=models, y=[_f(m, "RMSE", "top") / 1e4 for m in models],
-                              marker_color=TOK["primary"],
-                              text=[f"{_f(m, 'RMSE', 'top')/1e4:.1f}만" for m in models], textposition="outside"))
-        fige.update_layout(barmode="group", height=360, yaxis_title="RMSE(만, 낮을수록 우수)",
-                           legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0))
-        style_fig(fige)
-        st.plotly_chart(fige, use_container_width=True, config={"displayModeBar": False})
+        # ── SHAP Summary (LinearExplainer)
+        st.markdown('<h2 class="h-section" style="margin-top:22px">SHAP 해석 (Linear)</h2>', unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin-bottom:6px">각 점 = 한 예측 · 가로축 = SHAP value '
+                    '(예측 기여) · 색 = 표준화 변수값(빨강 높음 / 파랑 낮음).</div>', unsafe_allow_html=True)
+        fig_s = plt.figure(figsize=(9, 6))
+        shap.summary_plot(sv, features=Z, feature_names=keep, max_display=15, show=False)
+        plt.title("SHAP Summary (Ridge · VIF 후)", fontsize=12)
+        plt.tight_layout()
+        st.pyplot(fig_s, clear_figure=True)
 
-        # ── (2) 피처 중요도 막대 (내림차순, 상위 N개 강조)
-        st.markdown('<hr style="border:none;border-top:1px solid var(--hairline);margin:22px 0 6px 0">',
+        # ── 개별 예측: Force plot + LIME
+        st.markdown('<h2 class="h-section" style="margin-top:26px">개별 예측 — Force plot · LIME</h2>',
                     unsafe_allow_html=True)
-        st.markdown('<h2 class="h-section">RandomForest 변수 중요도</h2>', unsafe_allow_html=True)
-        st.markdown(f'<div class="caption" style="margin-bottom:8px">파란색 = 선택된 상위 <b>{nt}개</b> 핵심 피처</div>',
-                    unsafe_allow_html=True)
-        if imp:
-            items = sorted(imp.items(), key=lambda x: x[1])  # 가로막대: 아래→위 오름차순
-            topset = set(topf)
-            ys = [k for k, _ in items]
-            xs = [v for _, v in items]
-            cols_i = [TOK["primary"] if k in topset else TOK["ink_48"] for k in ys]
-            figi = go.Figure(go.Bar(x=xs, y=ys, orientation="h", marker_color=cols_i,
-                                    text=[f"{v:.3f}" for v in xs], textposition="outside"))
-            figi.update_layout(height=max(360, 22 * len(items)), xaxis_title="중요도",
-                               margin=dict(l=10, r=40))
-            style_fig(figi)
-            st.plotly_chart(figi, use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.caption("중요도 정보가 번들에 없습니다.")
+        ym = pd.to_datetime(pm["연월"].values)
+        labels = [f"{i:>3} · {pm.iloc[i]['공원명']} · {pd.Timestamp(ym[i]):%Y-%m}" for i in range(len(pm))]
+        default_i = next((i for i in range(len(pm)) if pm.iloc[i]["공원명"] == selected_park), 0)
+        idx = st.selectbox("설명할 예측 (기본 = 선택 공원)", range(len(pm)), index=default_i,
+                           format_func=lambda i: labels[i])
 
-        # ── (3) 한 줄 결론 (R² 중심, 모델별 전체→축소 명시)
-        if models:
-            top_join = ", ".join(topf)
-            rows = " · ".join(
-                f'{m} R² {_f(m, "R2", "full"):.3f}→{_f(m, "R2", "top"):.3f}({d_r2[m]:+.3f})'
-                for m in models)
-            st.markdown(
-                '<div class="card" style="margin-top:6px">'
-                f'<div class="body-strong" style="color:var(--ink)">변수를 {nf}개 → 핵심 {nt}개로 줄여도 '
-                f'평균 R²는 {avg_full:.3f} → {avg_top:.3f} ({d_avg:+.3f}).</div>'
-                '<div class="caption" style="margin-top:6px;line-height:1.7">'
-                f'모델별 R²(전체→축소): {rows}.<br/>'
-                f'핵심 변수 {nt}개: {top_join}.<br/>'
-                f'변수를 약 1/4로 줄여도 평균 R² 변화는 {d_avg:+.3f}에 그침 → 소수 핵심 변수로 성능 대부분 유지. '
-                f'축소 후 최고 성능은 <b>{best_m}</b>(R² {_f(best_m, "R2", "top"):.3f}).</div></div>',
-                unsafe_allow_html=True)
+        pred_i = base_val + sv[idx, :].sum()
+        f1, f2 = st.columns(2, gap="medium")
+        f1.markdown(metric_card(f"{pred_i/1e4:,.1f}만", f"예측 — {pm.iloc[idx]['공원명']}"), unsafe_allow_html=True)
+        f2.markdown(metric_card(f"{base_val/1e4:,.1f}만", "기준값(평균 예측)"), unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin:6px 0 4px 0">기준값에서 '
+                    '<b style="color:#ff0d57">빨강(↑)</b> · <b style="color:#1e88e5">파랑(↓)</b> '
+                    '변수 기여를 거쳐 최종 예측에 도달합니다. (변수값은 표준화 z-score)</div>', unsafe_allow_html=True)
+        shap.force_plot(base_val, sv[idx, :], features=np.round(Z[idx, :], 2), feature_names=keep,
+                        matplotlib=True, show=False, figsize=(20, 3), text_rotation=12)
+        st.pyplot(plt.gcf(), clear_figure=True)
 
-        # ── 비교표 + CSV (한글 안전 utf-8-sig)
-        st.markdown('<h2 class="h-section" style="margin-top:18px">비교표 · 다운로드</h2>',
+        st.markdown('<div class="body-strong" style="margin-top:18px">LIME — 국소 선형 근사 (경량 자체구현)</div>',
                     unsafe_allow_html=True)
-        cmp_df = pd.DataFrame([{
-            "모델": m,
-            "전체_R2": round(_f(m, "R2", "full"), 4),
-            "축소_R2": round(_f(m, "R2", "top"), 4),
-            "전체_RMSE": int(round(_f(m, "RMSE", "full"))),
-            "축소_RMSE": int(round(_f(m, "RMSE", "top"))),
-            "R2_변화": round(d_r2[m], 4),
-        } for m in models])
-        st.dataframe(cmp_df, use_container_width=True, hide_index=True)
-        imp_df = (pd.DataFrame([{"변수": k, "중요도": round(v, 5), "선택": (k in set(topf))}
-                                for k, v in sorted(imp.items(), key=lambda x: -x[1])])
-                  if imp else pd.DataFrame())
-        dc = st.columns(2, gap="medium")
-        dc[0].download_button("⬇️ 모델 비교표 CSV", cmp_df.to_csv(index=False).encode("utf-8-sig"),
-                              "fi_compare.csv", "text/csv", use_container_width=True)
-        if not imp_df.empty:
-            dc[1].download_button("⬇️ 변수 중요도 CSV", imp_df.to_csv(index=False).encode("utf-8-sig"),
-                                  "fi_importance.csv", "text/csv", use_container_width=True)
-        st.caption("※ 재학습 없이 사전계산된 fi_models.pkl 값만 읽어 그립니다. 일반이용자(아침/낮/저녁)는 "
-                   "타깃을 쪼갠 누수 변수라 학습에서 제외했습니다.")
+        lime_df = lime_explain(rg.predict, Z[idx], Z, keep, n_top=12)
+        colL = ["#E8505B" if v < 0 else TOK["primary"] for v in lime_df["국소기여"]]
+        fl = go.Figure(go.Bar(x=lime_df["국소기여"], y=lime_df["변수"], orientation="h", marker_color=colL,
+                              text=[f"{v/1e3:+.1f}K" for v in lime_df["국소기여"]], textposition="outside"))
+        fl.add_vline(x=0, line=dict(color=TOK["ink"], dash="dot"))
+        fl.update_layout(title=f"LIME 국소 기여 — {pm.iloc[idx]['공원명']} {pd.Timestamp(ym[idx]):%Y-%m}",
+                         height=420, xaxis_title="국소 기여 (파랑 ↑ / 빨강 ↓)", margin=dict(l=10, r=70))
+        style_fig(fl)
+        st.plotly_chart(fl, use_container_width=True, config={"displayModeBar": False})
+        st.caption("※ 경량 LIME = 표본 주변 perturbation의 거리가중 Ridge 국소근사(추가 의존성 0). "
+                   "설명력이 부족하면 아래 CSV(또는 SHAP 값)를 내려받아 lime/shap 패키지로 정밀 분석하세요.")
+
+        # ── CSV 다운로드 (실험표 · SHAP 평균 · LIME)
+        st.markdown('<h2 class="h-section" style="margin-top:18px">다운로드</h2>', unsafe_allow_html=True)
+        shap_imp = (pd.DataFrame({"변수": keep, "평균_abs_SHAP": np.abs(sv).mean(0)})
+                    .sort_values("평균_abs_SHAP", ascending=False))
+        dd = st.columns(3, gap="medium")
+        dd[0].download_button("⬇️ VIF 실험표 CSV", exp_df.to_csv(index=False).encode("utf-8-sig"),
+                              "vif_experiment.csv", "text/csv", use_container_width=True)
+        dd[1].download_button("⬇️ SHAP 평균기여 CSV", shap_imp.to_csv(index=False).encode("utf-8-sig"),
+                              "shap_importance.csv", "text/csv", use_container_width=True)
+        dd[2].download_button("⬇️ LIME 기여 CSV", lime_df.to_csv(index=False).encode("utf-8-sig"),
+                              "lime_local.csv", "text/csv", use_container_width=True)
+    except Exception as e:
+        st.markdown(f'<div class="caption">분석을 실행할 수 없습니다 — {type(e).__name__}: {e}</div>',
+                    unsafe_allow_html=True)
     tile_close()
 
 
@@ -1968,197 +2080,6 @@ elif page == "예측 시뮬레이터":
         fig.update_layout(title="예측 vs 공원 실측 평균", height=360, yaxis_title="월 이용객 수")
         style_fig(fig)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    tile_close()
-
-
-elif page == "잔차 진단":
-    tile_open("light", anchor="diagnostics")
-    st.markdown('<h2 class="h-section">잔차 도표 · 진단</h2>', unsafe_allow_html=True)
-
-    try:
-        from scipy.stats import probplot
-
-        preds = bundle["oof"]                 # 폴드별 검증 예측 (전 815건)
-        resid = bundle["y"] - preds
-
-        c1, c2 = st.columns(2, gap="medium")
-
-        with c1:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=preds, y=resid, mode="markers",
-                                     marker=dict(color=TOK["primary"], size=7, opacity=0.85)))
-            fig.add_hline(y=0, line=dict(color=TOK["ink"], width=1, dash="dot"))
-            fig.update_layout(title="잔차 vs 예측값", xaxis_title="예측", yaxis_title="잔차")
-            style_fig(fig)
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-        with c2:
-            (osm, osr), _ = probplot(resid, dist="norm")
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=osm, y=osr, mode="markers",
-                                     marker=dict(color=TOK["primary"], size=7)))
-            fig.add_trace(go.Scatter(x=osm, y=osm * np.std(resid),
-                                     mode="lines", line=dict(color=TOK["ink"], dash="dot")))
-            fig.update_layout(title="Q-Q Plot", showlegend=False)
-            style_fig(fig)
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    except Exception as e:
-        st.markdown(f'<div class="caption">진단 오류 — {e}</div>', unsafe_allow_html=True)
-
-    # ── 모델별 Learning Curve (사전계산 결과를 그림 — 인앱 학습 없음)
-    st.markdown('<h2 class="h-section" style="margin-top:26px">모델별 Learning Curve</h2>', unsafe_allow_html=True)
-    st.markdown('<div class="caption" style="margin-bottom:10px">훈련 표본 수를 늘려가며 학습·검증 R²를 봅니다. '
-                '두 곡선이 수렴하면 데이터 충분, 갭이 크면 과적합.</div>', unsafe_allow_html=True)
-
-    def _plot_lc(name, d, col):
-        ts = np.asarray(d["train_sizes"], float)
-        tr = np.asarray(d["train_scores"], float); va = np.asarray(d["val_scores"], float)
-        tr_m = tr.mean(1) if tr.ndim == 2 else tr
-        va_m = va.mean(1) if va.ndim == 2 else va
-        va_s = va.std(1) if va.ndim == 2 else np.zeros_like(va_m)
-        flc = go.Figure()
-        # 검증 폴드 분산 밴드
-        flc.add_trace(go.Scatter(x=np.concatenate([ts, ts[::-1]]),
-                                 y=np.concatenate([va_m + va_s, (va_m - va_s)[::-1]]),
-                                 fill="toself", fillcolor="rgba(0,102,204,0.12)",
-                                 line=dict(color="rgba(0,0,0,0)"), showlegend=False, hoverinfo="skip"))
-        flc.add_trace(go.Scatter(x=ts, y=tr_m, name="학습", mode="lines+markers",
-                                 line=dict(color=TOK["ink"], width=2)))
-        flc.add_trace(go.Scatter(x=ts, y=va_m, name="검증", mode="lines+markers",
-                                 line=dict(color=TOK["primary"], width=2.4)))
-        flc.update_layout(title=name, height=320, xaxis_title="학습 표본수", yaxis_title="R²",
-                          legend=dict(orientation="h", y=1.16))
-        style_fig(flc)
-        col.plotly_chart(flc, use_container_width=True, config={"displayModeBar": False})
-
-    LC, lc_err = load_learning_curves()
-    if LC:
-        # 구조 자동 감지: 공원별({공원:{모델:...}}) vs 평면({모델:...})
-        first = next(iter(LC.values()))
-        is_perpark = isinstance(first, dict) and "train_sizes" not in first
-        if is_perpark:
-            covered = list(LC.keys())
-            if selected_park in LC:
-                pk, note = selected_park, "(사이드바/헤더에서 공원 변경 가능)"
-            else:
-                pk = covered[0]
-                note = (f'— <b style="color:#E8505B">{selected_park}</b>은(는) learning curve에 없어 '
-                        f'<b>{pk}</b>로 대체 표시합니다 (대형 3개 공원 제외). '
-                        f'커버 공원: {", ".join(c.replace("한강공원", "") for c in covered)}')
-            curves = LC[pk]
-            st.markdown(f'<div class="caption" style="margin-bottom:6px">기준 공원: '
-                        f'<b style="color:var(--primary)">{pk}</b> {note}</div>', unsafe_allow_html=True)
-        else:
-            curves = LC
-        names = list(curves.keys())
-        for r in range(0, len(names), 3):
-            row = names[r:r + 3]
-            lcols = st.columns(len(row), gap="medium")
-            for nm, col in zip(row, lcols):
-                _plot_lc(nm, curves[nm], col)
-        st.caption("※ model/learning_curves.pkl 사전계산 결과 (직접 학습한 모델 기준). 인앱 재학습 안 함.")
-    else:
-        st.markdown(f"""
-        <div class="card">
-          <div class="body-strong">learning curve 데이터를 불러오지 못했습니다</div>
-          <div class="caption" style="margin-top:8px; line-height:1.8">
-            진단: <code>{lc_err or "알 수 없음"}</code><br/>
-            형식: <code>{{ 공원명: {{ 모델명: {{"train_sizes":[...],"train_scores":[...],"val_scores":[...]}} }} }}</code>
-            또는 평면 <code>{{ 모델명: {{...}} }}</code>.
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
-        with st.expander("또는 앱에서 직접 계산 (참고용 — 인앱 학습)"):
-            if st.button("Learning Curve 인앱 계산", key="lc_run"):
-                try:
-                    from sklearn.model_selection import learning_curve, KFold
-                    from sklearn.compose import ColumnTransformer
-                    from sklearn.preprocessing import OneHotEncoder
-                    from sklearn.pipeline import Pipeline
-                    from sklearn.linear_model import Ridge
-                    from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
-                    Xlc, ylc = bundle["X"], bundle["y"]
-
-                    def _mkpipe(est):
-                        pre = ColumnTransformer([("num", "passthrough", feature_cols),
-                                                 ("park", OneHotEncoder(handle_unknown="ignore"), ["공원명"])])
-                        return Pipeline([("pre", pre), ("est", est)])
-                    models = {"Ridge": _mkpipe(Ridge(alpha=21)),
-                              "RandomForest": _mkpipe(RandomForestRegressor(n_estimators=120, random_state=42, n_jobs=-1)),
-                              "GradientBoosting": _mkpipe(GradientBoostingRegressor(random_state=42))}
-                    lcols = st.columns(len(models), gap="medium")
-                    with st.spinner("계산 중..."):
-                        for (nm, mdl), col in zip(models.items(), lcols):
-                            ts, tr, va = learning_curve(mdl, Xlc, ylc, train_sizes=np.linspace(0.2, 1.0, 5),
-                                                        cv=KFold(4, shuffle=True, random_state=42),
-                                                        scoring="r2", n_jobs=-1)
-                            _plot_lc(nm, {"train_sizes": ts, "train_scores": tr, "val_scores": va}, col)
-                except Exception as e:
-                    st.markdown(f'<div class="caption">오류 — {e}</div>', unsafe_allow_html=True)
-    tile_close()
-
-
-elif page == "SHAP 해석":
-    tile_open("parchment", anchor="interpret")
-    st.markdown('<h2 class="h-section">SHAP 기반 해석</h2>', unsafe_allow_html=True)
-
-    try:
-        import shap
-        import matplotlib.pyplot as plt
-
-        # SHAP 계산은 무거우므로 캐시 (TreeExplainer · 트리 400개)
-        @st.cache_resource
-        def compute_shap(_bundle, n=120):
-            mdl = _bundle["model"]
-            rf = mdl.named_steps["rf"]
-            pre = mdl.named_steps["pre"]
-            Xt = pre.transform(_bundle["Xte"])
-            if hasattr(Xt, "toarray"):
-                Xt = Xt.toarray()
-            Xt = Xt[:n]
-            ex = shap.TreeExplainer(rf)
-            sv = ex.shap_values(Xt)
-            base = float(np.ravel(ex.expected_value)[0])
-            return base, np.asarray(sv), Xt
-
-        base_val, sv, sample = compute_shap(bundle)
-        names = bundle["names"]
-        sub = bundle["Xte"].iloc[:sample.shape[0]]            # 표본 (원본 인덱스 유지)
-        ym = pm.loc[sub.index, "연월"].values                  # 연월은 pm에서 매핑 (Xte엔 없음)
-
-        # 1) SHAP 요약 (정통 beeswarm)
-        st.markdown('<div class="caption" style="margin-bottom:6px">각 점 = 한 예측 · 가로축 = SHAP value '
-                    '(예측에 미친 영향) · 색 = 변수값(빨강 높음 / 파랑 낮음).</div>', unsafe_allow_html=True)
-        fig_s = plt.figure(figsize=(9, 6))
-        shap.summary_plot(sv, features=sample, feature_names=names, max_display=15, show=False)
-        plt.title("SHAP Summary (RandomForest)", fontsize=12)
-        plt.tight_layout()
-        st.pyplot(fig_s, clear_figure=True)
-
-        # 2) 개별 예측 Force Plot (matplotlib — 클라우드에서도 안정 표시)
-        st.markdown('<h2 class="h-section" style="margin-top:32px">개별 예측 기여도 (Force Plot)</h2>',
-                    unsafe_allow_html=True)
-        labels = [f"{i:>3} · {sub.iloc[i]['공원명']} · {pd.Timestamp(ym[i]):%Y-%m}"
-                  for i in range(len(sub))]
-        default_i = next((i for i in range(len(sub)) if sub.iloc[i]["공원명"] == selected_park), 0)
-        idx = st.selectbox("설명할 예측 (기본 = 선택한 공원)", range(len(sub)),
-                           index=default_i, format_func=lambda i: labels[i])
-
-        pred_i = base_val + sv[idx, :].sum()
-        k1, k2 = st.columns(2, gap="medium")
-        k1.markdown(metric_card(f"{pred_i/1e4:,.1f}만 명",
-                                f"예측 — {sub.iloc[idx]['공원명']}"), unsafe_allow_html=True)
-        k2.markdown(metric_card(f"{base_val/1e4:,.1f}만 명", "기준값(평균 예측)"), unsafe_allow_html=True)
-        st.markdown('<div class="caption" style="margin:6px 0 4px 0">기준값에서 '
-                    '<b style="color:#ff0d57">빨강(↑)</b> · <b style="color:#1e88e5">파랑(↓)</b> '
-                    '변수 기여를 거쳐 최종 예측에 도달합니다.</div>', unsafe_allow_html=True)
-
-        shap.force_plot(base_val, sv[idx, :], features=np.round(sample[idx, :], 1),
-                        feature_names=names, matplotlib=True, show=False,
-                        figsize=(20, 3), text_rotation=12)
-        st.pyplot(plt.gcf(), clear_figure=True)
-    except Exception as e:
-        st.markdown(f'<div class="caption">SHAP 분석 오류 — {e}</div>', unsafe_allow_html=True)
     tile_close()
 
 
@@ -2326,11 +2247,11 @@ st.markdown(f"""
       <a href="#eda">EDA</a>
       <a href="#ttest">t-test &amp; VIF</a>
       <a href="#model">모델 예측</a>
-      <a href="#diagnostics">잔차 진단</a>
+      <a href="#hskr">신규 모델 (HSKR)</a>
     </div>
     <div>
       <h5>해석</h5>
-      <a href="#interpret">SHAP</a>
+      <a href="#featimp">핵심 변수 선별 효과</a>
       <a href="#uncertainty">Conformal</a>
       <a href="#bootstrap">Bootstrap CI</a>
       <a href="#nested-cv">Nested CV</a>
