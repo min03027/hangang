@@ -969,7 +969,7 @@ PAGE_DESC = {
     "t-test & VIF": "피처 선별 · 공선성", "모델 예측": "비교1 · VIF 모델 비교(업로드 결과)",
     "예측 시뮬레이터": "입력 → 실시간 예측", "Conformal": "예측 구간",
     "Bootstrap CI": "성능 신뢰구간", "Nested CV": "일반화 추정",
-    "신규 모델 (HSKR)": "HSKR vs Ridge · 11공원",
+    "신규 모델 (HSKR)": "HSKR vs ElasticNet · 11공원",
     "핵심 변수 선별 효과": "비교2 · VIF+중요도 + SHAP/LIME/잔차",
 }
 
@@ -1696,10 +1696,10 @@ elif page == "모델 예측":
 
 elif page == "신규 모델 (HSKR)":
     tile_open("light", anchor="hskr")
-    st.markdown('<h2 class="h-display" style="color:var(--ink)">신규 HSKR vs 기존 Ridge</h2>',
+    st.markdown('<h2 class="h-display" style="color:var(--ink)">신규 HSKR vs 기존 ElasticNet</h2>',
                 unsafe_allow_html=True)
     st.markdown('<p class="lead">직접 구현한 Hybrid Seasonal Kernel Ridge(계절 푸리에 + RBF 커널)와 '
-                '기존 Ridge 모델을 공원별로 비교합니다 — 전 11개 공원.</p>', unsafe_allow_html=True)
+                '최고 표준 ML <b>ElasticNet</b>을 공원별로 비교합니다 — 전 11개 공원.</p>', unsafe_allow_html=True)
     tile_close()
 
     B, hskr_err = load_hskr()
@@ -1721,7 +1721,8 @@ elif page == "신규 모델 (HSKR)":
         from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
         parks = list(B["parks"])
         core = [p for p in ("망원한강공원", "이촌한강공원", "잠실한강공원") if p in parks]
-        bn = "Ridge" if "Ridge" in B["per_park"][parks[0]]["metrics"] else B["best_base_name"]
+        _m0 = B["per_park"][parks[0]]["metrics"]
+        bn = "ElasticNet" if "ElasticNet" in _m0 else ("Ridge" if "Ridge" in _m0 else B["best_base_name"])
 
         def _red(p):
             mm = B["per_park"][p]["metrics"]
@@ -1737,17 +1738,17 @@ elif page == "신규 모델 (HSKR)":
         n_win = sum(1 for p in parks if _red(p) > 0)
 
         st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6">HSKR(계절+커널)을 '
-                    f'<b>전 {len(parks)}개 공원</b>에 공원별로 학습해 기존 Ridge와 비교합니다. '
-                    f'평가지표는 <b>R²</b>와 <b>RMSE</b>. HSKR이 R²·RMSE 모두에서 Ridge를 앞서며 '
-                    f'<b>{n_win}/{len(parks)}개 공원</b>에서 RMSE를 낮췄습니다. 아래 전체값은 테스트 구간 풀링이라 '
+                    f'<b>전 {len(parks)}개 공원</b>에 공원별로 학습해 기존 <b>{bn}</b>과 비교합니다. '
+                    f'평가지표는 <b>R²</b>와 <b>RMSE</b>. HSKR이 <b>{n_win}/{len(parks)}개 공원</b>에서 '
+                    f'{bn} 대비 RMSE를 낮췄습니다. 아래 전체값은 테스트 구간 풀링이라 '
                     f'공원 간 스케일 차(수만~수백만)로 R²가 낮게 나옵니다(공원별 R²는 아래 상세 참고).</div>',
                     unsafe_allow_html=True)
         g1, g2, g3 = st.columns(3, gap="medium")
-        g1.markdown(metric_card(f"{hk_r2:.3f}", "전체 R² (HSKR)", delta=f"+Ridge {rg_r2:.3f}"), unsafe_allow_html=True)
+        g1.markdown(metric_card(f"{hk_r2:.3f}", "전체 R² (HSKR)", delta=f"+{bn} {rg_r2:.3f}"), unsafe_allow_html=True)
         g2.markdown(metric_card(f"{hk_rmse/1e4:.1f}만", "전체 RMSE (HSKR)",
-                                delta=f"+Ridge {rg_rmse/1e4:.1f}만"), unsafe_allow_html=True)
-        g3.markdown(metric_card(f"+{ov_red:.1f}%", "RMSE 감소율", delta="+vs Ridge"), unsafe_allow_html=True)
-        fov = go.Figure(go.Bar(x=[hk_rmse / 1e4, rg_rmse / 1e4], y=["HSKR", "Ridge(기존)"], orientation="h",
+                                delta=f"+{bn} {rg_rmse/1e4:.1f}만"), unsafe_allow_html=True)
+        g3.markdown(metric_card(f"+{ov_red:.1f}%", "RMSE 감소율", delta=f"+vs {bn}"), unsafe_allow_html=True)
+        fov = go.Figure(go.Bar(x=[hk_rmse / 1e4, rg_rmse / 1e4], y=["HSKR", f"{bn}(기존)"], orientation="h",
                                marker_color=[TOK["primary"], "#E8505B"],
                                text=[f"{hk_rmse/1e4:.1f}만", f"{rg_rmse/1e4:.1f}만"], textposition="outside"))
         fov.update_layout(title=f"{len(parks)}개 공원 전체 RMSE (낮을수록 우수)", height=240, xaxis_title="RMSE(만)",
@@ -1795,7 +1796,7 @@ elif page == "신규 모델 (HSKR)":
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
         # ── 모델 비교 (RMSE / R²)
-        st.markdown('<h2 class="h-section" style="margin-top:20px">모델 비교 (HSKR vs Ridge)</h2>',
+        st.markdown(f'<h2 class="h-section" style="margin-top:20px">모델 비교 (HSKR vs {bn})</h2>',
                     unsafe_allow_html=True)
         ca, cb = st.columns(2, gap="medium")
         with ca:
@@ -1836,7 +1837,7 @@ elif page == "신규 모델 (HSKR)":
                                   orientation="h", marker_color=barc,
                                   text=[f"{v:+.0f}%" for _, v in reds], textposition="outside"))
             fp.add_vline(x=0, line=dict(color=TOK["ink"], dash="dot"))
-            fp.update_layout(title="공원별 RMSE 감소율 vs Ridge (빨강=핵심3)", height=380, xaxis_title="감소율 %")
+            fp.update_layout(title=f"공원별 RMSE 감소율 vs {bn} (빨강=핵심3)", height=380, xaxis_title="감소율 %")
             style_fig(fp)
             st.plotly_chart(fp, use_container_width=True, config={"displayModeBar": False})
 
@@ -1849,11 +1850,11 @@ elif page == "신규 모델 (HSKR)":
             avg_red = float(np.mean([_red(p) for p in core]))
             st.markdown(f'<div class="caption" style="margin-top:8px">핵심 3개 공원'
                         f'({" · ".join(p.replace("한강공원","") for p in core)}) 평균 RMSE 감소율 '
-                        f'<b style="color:var(--primary)">+{avg_red:.1f}%</b> (HSKR vs Ridge).</div>',
+                        f'<b style="color:var(--primary)">+{avg_red:.1f}%</b> (HSKR vs {bn}).</div>',
                         unsafe_allow_html=True)
-        st.caption("※ 전 11개 공원을 공원별로 학습(시계열 holdout). 대형·구조변화 공원(뚝섬·여의도 등)은 "
-                   "예측이 어려워 R²가 음수일 수 있으나 HSKR이 Ridge 대비 RMSE를 줄입니다. "
-                   "Ridge는 동일 테스트 구간의 기존 Ridge 베이스라인.")
+        st.caption(f"※ 전 11개 공원을 공원별로 학습(시계열 holdout). 대형·구조변화 공원(뚝섬·여의도 등)은 "
+                   f"예측이 어려워 R²가 음수일 수 있으나 HSKR이 {bn} 대비 RMSE를 줄입니다. "
+                   f"{bn}은 동일 테스트 구간의 기존 베이스라인.")
     tile_close()
 
 
