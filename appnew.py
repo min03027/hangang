@@ -584,11 +584,13 @@ feature_cols = num_cols          # 모델 피처 = 시설 + 검색량 + 계절�
 # ─────────────────────────────────────────────────────────────
 @st.cache_resource
 def get_bundle(_pm, feats):
+    # Streamlit Cloud RAM(~1GB) 절약: 트리 수 축소(400→120) + 미사용 cross_val_score 제거.
+    # 시뮬레이터/Conformal/Bootstrap/Nested CV 페이지에서만 lazy 호출(모듈 레벨 학습 안 함).
     from sklearn.ensemble import RandomForestRegressor
     from sklearn.compose import ColumnTransformer
     from sklearn.preprocessing import OneHotEncoder
     from sklearn.pipeline import Pipeline
-    from sklearn.model_selection import train_test_split, cross_val_score, cross_val_predict, KFold
+    from sklearn.model_selection import train_test_split, cross_val_predict, KFold
 
     X = _pm[feats + ["공원명"]].copy()
     y = _pm["총이용객"].values
@@ -597,18 +599,12 @@ def get_bundle(_pm, feats):
         ("park", OneHotEncoder(handle_unknown="ignore"), ["공원명"]),
     ])
     model = Pipeline([("pre", pre),
-                      ("rf", RandomForestRegressor(n_estimators=400, random_state=42, n_jobs=-1))])
+                      ("rf", RandomForestRegressor(n_estimators=120, random_state=42, n_jobs=-1))])
     kf = KFold(5, shuffle=True, random_state=42)
-    cv = cross_val_score(model, X, y, cv=kf, scoring="r2")
-    oof = cross_val_predict(model, X, y, cv=kf)        # 폴드별 검증 예측 (정직한 대표 성능)
+    oof = cross_val_predict(model, X, y, cv=kf)        # 폴드별 검증 예측 (Bootstrap용)
     Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.2, random_state=42)
     model.fit(Xtr, ytr)
-    names = [n.split("__", 1)[-1] for n in model.named_steps["pre"].get_feature_names_out()]
-    return {"model": model, "X": X, "y": y, "Xtr": Xtr, "Xte": Xte,
-            "ytr": ytr, "yte": yte, "cv": cv, "oof": oof, "names": names}
-
-
-bundle = get_bundle(pm, feature_cols)
+    return {"model": model, "X": X, "y": y, "Xte": Xte, "yte": yte, "oof": oof}
 
 
 def get_Xy(df_in=None):
@@ -1883,8 +1879,8 @@ elif page == "핵심 변수 선별 효과":
                 FAC = {"Ridge": Ridge(alpha=10.0),
                        "ElasticNet": ElasticNet(alpha=0.5, l1_ratio=0.7, max_iter=5000),
                        "GradientBoosting": GradientBoostingRegressor(random_state=42),
-                       "RandomForest": RandomForestRegressor(n_estimators=400, random_state=42, n_jobs=-1),
-                       "ExtraTrees": ExtraTreesRegressor(n_estimators=400, random_state=42, n_jobs=-1)}
+                       "RandomForest": RandomForestRegressor(n_estimators=150, random_state=42, n_jobs=-1),
+                       "ExtraTrees": ExtraTreesRegressor(n_estimators=150, random_state=42, n_jobs=-1)}
                 cols = [c for c in cols if c in _pm.columns]
                 X = _pm[cols].astype(float).fillna(0).values
                 y = _pm["총이용객"].values.astype(float)
@@ -2049,6 +2045,7 @@ elif page == "예측 시뮬레이터":
     tile_close()
 
     tile_open("light")
+    bundle = get_bundle(pm, feature_cols)
     model = bundle["model"]
     sim_cols = [c for c in feature_cols if c not in ("월sin", "월cos")]  # 계절성은 월 선택으로 처리
 
@@ -2123,6 +2120,7 @@ elif page == "Conformal":
         alpha = st.slider("유의수준 α", 0.05, 0.30, 0.10, 0.05,
                           help="1-α 가 커버리지 (예: α=0.10 → 90% 구간)")
 
+        bundle = get_bundle(pm, feature_cols)
         model = bundle["model"]
         # 학습에 쓰지 않은 홀드아웃을 보정/검정으로 분할 (split conformal)
         X_cal, X_tst, y_cal, y_tst = train_test_split(bundle["Xte"], bundle["yte"],
@@ -2168,6 +2166,7 @@ elif page == "Bootstrap CI":
 
         n_boot = st.slider("Bootstrap 반복 수", 100, 2000, 500, 100)
 
+        bundle = get_bundle(pm, feature_cols)
         yte = np.asarray(bundle["y"], dtype=float)
         pred = np.asarray(bundle["oof"], dtype=float)   # 폴드별 검증 예측 (전 815건)
         n = len(yte)
@@ -2219,6 +2218,7 @@ elif page == "Nested CV":
             from sklearn.model_selection import KFold, GridSearchCV
             from sklearn.metrics import r2_score
 
+            bundle = get_bundle(pm, feature_cols)
             X, y = bundle["X"], bundle["y"]
 
             def make_pipe():
