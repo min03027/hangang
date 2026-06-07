@@ -622,7 +622,7 @@ def get_Xy(df_in=None):
 #   · pkl 언피클 전 반드시 hskr_model 모듈 import 필요
 #   · 파일: hskr_model.py (루트) + model/hskr_model.pkl (또는 루트)
 # ─────────────────────────────────────────────────────────────
-@st.cache_resource
+# 캐시하지 않음 — pkl 구조가 바뀌어도 stale 캐시로 KeyError 나지 않도록 매번 새로 읽음(파일 작음)
 def load_hskr():
     """HSKR 번들 로드. (bundle|None, err|None) 반환 — 실패해도 앱이 죽지 않도록 방어.
 
@@ -647,7 +647,7 @@ def load_hskr():
 #   · 전체 피처 vs 상위 N개 핵심 피처 재학습 성능 비교 (재학습 없이 읽어 그림)
 #   · models_top["HSKR"]가 커스텀 객체 → 언피클 전 hskr_model import 필요
 # ─────────────────────────────────────────────────────────────
-@st.cache_resource
+# 캐시하지 않음 (stale 캐시 방지)
 def load_fi():
     """피처 중요도 번들 로드. (bundle|None, err|None) 반환 — 실패해도 앱이 죽지 않도록 방어."""
     base = os.path.dirname(__file__)
@@ -682,7 +682,7 @@ def load_learning_curves():
     return None, "파일 없음: " + " / ".join(cands)
 
 
-@st.cache_resource
+# 캐시하지 않음 — pkl 구조 변경 시 stale 캐시로 KeyError 방지 (파일 3.7K, 매번 읽기 무방)
 def load_model_compare():
     """모델 예측 페이지용 model_compare.pkl 로드. (obj|None, err|None)."""
     base = os.path.dirname(__file__)
