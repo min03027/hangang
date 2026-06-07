@@ -1607,72 +1607,90 @@ elif page == "모델 예측":
         </div>
         """, unsafe_allow_html=True)
     else:
+        from scipy.stats import probplot
         mf = FB["metrics_full"]
         allf = list(FB["all_features"])
-        order = [m for m in ("Ridge", "ElasticNet", "GradientBoosting", "RandomForest", "ExtraTrees", "HSKR")
+        order = [m for m in ("Ridge", "ElasticNet", "GradientBoosting", "RandomForest", "ExtraTrees")
                  if m in mf] + [m for m in mf if m not in
                                 ("Ridge", "ElasticNet", "GradientBoosting", "RandomForest", "ExtraTrees", "HSKR")]
-        std = [m for m in order if m != "HSKR"]
-        best = max(std, key=lambda m: mf[m]["R2"]) if std else order[0]
-        has_h = "HSKR" in mf
+        best = max(order, key=lambda m: mf[m]["R2"]) if order else None
 
         def _col(m):
-            return "#E8505B" if m == "HSKR" else (TOK["primary"] if m == best else TOK["ink_48"])
+            return TOK["primary"] if m == best else TOK["ink_48"]
 
         k1, k2, k3 = st.columns(3, gap="medium")
-        k1.markdown(metric_card(f"{len(allf)}개", "VIF 적용 피처 수"), unsafe_allow_html=True)
-        k2.markdown(metric_card(best, f"최고 표준 ML · R² {mf[best]['R2']:.3f}"), unsafe_allow_html=True)
-        if has_h:
-            k3.markdown(metric_card(f"{mf['HSKR']['R2']:.3f}", "HSKR(신규모델) R²", delta="+신규 모델 페이지"),
-                        unsafe_allow_html=True)
-        else:
-            k3.markdown(metric_card(f"{mf[best]['RMSE']/1e4:.1f}만", f"{best} RMSE"), unsafe_allow_html=True)
-        st.markdown('<div class="caption" style="margin:10px 0 16px 0;line-height:1.6">수치 = 업로드한 '
-                    '<b>fi_models.pkl</b>(VIF 적용 24개 피처) 그대로. 표준 ML 중 <b style="color:var(--primary)">'
-                    f'{best}</b>가 1등. <b style="color:#E8505B">HSKR</b>은 직접 만든 신규 모델로 '
-                    '신규 모델 페이지에서 별도 비교합니다.</div>', unsafe_allow_html=True)
+        k1.markdown(metric_card(f"{len(order)}개", "비교 모델 수 (HSKR 제외)"), unsafe_allow_html=True)
+        k2.markdown(metric_card(best, f"최고 모델 · R² {mf[best]['R2']:.3f}"), unsafe_allow_html=True)
+        k3.markdown(metric_card(f"{mf[best]['RMSE']/1e4:.1f}만", f"{best} RMSE"), unsafe_allow_html=True)
+        st.markdown(f'<div class="caption" style="margin:10px 0 16px 0;line-height:1.6">수치 = 업로드한 '
+                    f'<b>fi_models.pkl</b>(VIF 적용 {len(allf)}개 피처) 그대로 · 머신러닝 <b>{len(order)}개</b> '
+                    f'(HSKR 제외). 최고 모델은 <b style="color:var(--primary)">{best}</b> '
+                    f'(R² {mf[best]["R2"]:.3f}).</div>', unsafe_allow_html=True)
 
         ca, cb = st.columns(2, gap="medium")
         with ca:
             fr = go.Figure(go.Bar(x=[mf[m]["R2"] for m in order], y=order, orientation="h",
                                   marker_color=[_col(m) for m in order],
                                   text=[f"{mf[m]['R2']:.3f}" for m in order], textposition="outside"))
-            fr.update_layout(title="R² (높을수록 우수 · 파랑=최고 표준ML)", height=360, xaxis_title="R²", margin=dict(r=70))
+            fr.update_layout(title="R² (높을수록 우수 · 파랑=1등)", height=340, xaxis_title="R²", margin=dict(r=70))
             style_fig(fr)
             st.plotly_chart(fr, use_container_width=True, config={"displayModeBar": False})
         with cb:
             fe = go.Figure(go.Bar(x=[mf[m]["RMSE"] / 1e4 for m in order], y=order, orientation="h",
                                   marker_color=[_col(m) for m in order],
                                   text=[f"{mf[m]['RMSE']/1e4:.1f}" for m in order], textposition="outside"))
-            fe.update_layout(title="RMSE(만, 낮을수록 우수)", height=360, xaxis_title="RMSE(만)", margin=dict(r=70))
+            fe.update_layout(title="RMSE(만, 낮을수록 우수)", height=340, xaxis_title="RMSE(만)", margin=dict(r=70))
             style_fig(fe)
             st.plotly_chart(fe, use_container_width=True, config={"displayModeBar": False})
 
         cmp_df = pd.DataFrame([{"모델": m, "R²": round(mf[m]["R2"], 3),
                                 "RMSE(만)": round(mf[m]["RMSE"] / 1e4, 1),
-                                "비고": "신규모델" if m == "HSKR" else ("★ 최고 표준ML" if m == best else "")}
-                               for m in order])
+                                "1등": "★" if m == best else ""} for m in order])
         st.dataframe(cmp_df, use_container_width=True, hide_index=True)
         st.download_button("⬇️ 모델 성능표 CSV", cmp_df.to_csv(index=False).encode("utf-8-sig"),
                            "model_compare.csv", "text/csv")
-        st.markdown(f'<div class="caption" style="margin-top:8px">→ 최고 표준 ML '
-                    f'<b style="color:var(--primary)">{best}</b>은 <b>핵심 변수 선별 효과</b>(비교 2)에서 '
-                    f'VIF+중요도 축소·진단에 사용됩니다.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin-top:8px">→ <b>핵심 변수 선별 효과</b>(비교 2)에서는 '
+                    '해석이 명확한 <b style="color:var(--primary)">Ridge</b>로 VIF+중요도 축소·진단을 봅니다.</div>',
+                    unsafe_allow_html=True)
 
+        # ── 모델별 Learning Curve + Q-Q (사전계산)
         if MC and MC.get("lc"):
+            lcs, oofs, yv = MC["lc"], MC.get("oof", {}), np.asarray(MC.get("y", []), float)
+            names = [m for m in order if m in lcs]
+
             st.markdown('<h2 class="h-section" style="margin-top:30px">모델별 Learning Curve</h2>',
                         unsafe_allow_html=True)
-            st.markdown('<div class="caption" style="margin-bottom:10px">훈련 표본 수를 늘려가며 학습·검증 R²를 봅니다. '
+            st.markdown('<div class="caption" style="margin-bottom:10px">훈련 표본 수를 늘려가며 학습·검증 R². '
                         '두 곡선이 수렴하면 데이터 충분, 갭이 크면 과적합.</div>', unsafe_allow_html=True)
-            lcs = MC["lc"]
-            names = list(lcs.keys())
             for r in range(0, len(names), 3):
                 rowm = names[r:r + 3]
-                lcols = st.columns(len(rowm), gap="medium")
-                for nm, col in zip(rowm, lcols):
+                cols = st.columns(len(rowm), gap="medium")
+                for nm, col in zip(rowm, cols):
                     _plot_lc(nm, lcs[nm], col)
-            st.caption("※ 학습곡선은 동일 24개 피처로 앱에서 사전계산(참고용·곡선 형태 기준). "
-                       "성능 수치(위 표)는 업로드한 fi_models.pkl 기준이라 절대 R²는 다를 수 있습니다.")
+
+            if oofs and len(yv):
+                st.markdown('<h2 class="h-section" style="margin-top:24px">모델별 Q-Q Plot (OOF 잔차 정규성)</h2>',
+                            unsafe_allow_html=True)
+                st.markdown('<div class="caption" style="margin-bottom:10px">교차검증 잔차가 점선(정규분포)에 붙을수록 '
+                            '정규성 가정 충족. 양끝이 휘면 두꺼운 꼬리(이상치).</div>', unsafe_allow_html=True)
+                qn = [m for m in names if m in oofs]
+                for r in range(0, len(qn), 3):
+                    rowm = qn[r:r + 3]
+                    cols = st.columns(len(rowm), gap="medium")
+                    for nm, col in zip(rowm, cols):
+                        resid = yv - np.asarray(oofs[nm], float)
+                        (osm, osr), _ = probplot(resid, dist="norm")
+                        fq = go.Figure()
+                        fq.add_trace(go.Scatter(x=osm, y=osr, mode="markers",
+                                                marker=dict(color=TOK["primary"], size=5)))
+                        fq.add_trace(go.Scatter(x=osm, y=osm * np.std(resid), mode="lines",
+                                                line=dict(color=TOK["ink"], dash="dot")))
+                        fq.update_layout(title=nm, showlegend=False, height=300,
+                                         xaxis_title="이론 분위수", yaxis_title="잔차 분위수")
+                        style_fig(fq)
+                        col.plotly_chart(fq, use_container_width=True, config={"displayModeBar": False})
+            st.caption("※ Learning Curve·Q-Q는 동일 모델(업로드 pkl의 하이퍼파라미터)을 VIF 24피처로 재학습해 "
+                       "사전계산(참고용). 성능 수치(위 표)는 fi_models.pkl 기준.")
     tile_close()
 
 
@@ -1863,7 +1881,8 @@ elif page == "핵심 변수 선별 효과":
             allf, topf = list(FB["all_features"]), list(FB["top_features"])
             importance = FB.get("importance", {})
             std = [m for m in mf if m != "HSKR"]
-            best = max(std, key=lambda m: mf[m]["R2"]) if std else list(mf)[0]
+            # 사용자 요청: 비교2(VIF vs VIF+중요도)·진단은 해석이 명확한 Ridge로 고정
+            best = "Ridge" if "Ridge" in mf else (max(std, key=lambda m: mf[m]["R2"]) if std else list(mf)[0])
             kind = "linear" if best in ("Ridge", "ElasticNet") else "tree"
             mvb, mtb = mf[best], mt[best]      # 업로드 pkl 기준 best 모델 full vs top
             nv, ni = len(allf), len(topf)
@@ -1897,7 +1916,8 @@ elif page == "핵심 변수 선별 효과":
                 return dict(Z=Z, y=y, oof=oof, mdl=mdl, sv=sv, base_val=base_val,
                             cols=[c for c in cols if c in _pm.columns])
 
-            D = _diag(pm, best, tuple(topf))
+            D = _diag(pm, best, tuple(topf))    # VIF+중요도 (상위 top-K)
+            Dv = _diag(pm, best, tuple(allf))   # VIF (전체) — 전후 비교용
             Z, y, oof, mdl, sv, base_val = D["Z"], D["y"], D["oof"], D["mdl"], D["sv"], D["base_val"]
             diag_cols = D["cols"]
 
@@ -1952,39 +1972,62 @@ elif page == "핵심 변수 선별 효과":
             else:
                 st.caption("importance 정보가 fi_models.pkl에 없습니다.")
 
-            # ── 잔차 진단: Residual + Q-Q (VIF+중요도 모델 OOF)
-            resid = y - oof
-            st.markdown(f'<h2 class="h-section" style="margin-top:24px">잔차 진단 ({best} · VIF+중요도 {ni}개 · OOF)</h2>',
+            # ── 잔차 진단: VIF 전후 비교 (잔차 + Q-Q 각각 좌:VIF / 우:VIF+중요도)
+            st.markdown(f'<h2 class="h-section" style="margin-top:24px">잔차 진단 — VIF 전후 비교 ({best} · OOF)</h2>',
                         unsafe_allow_html=True)
-            d1, d2 = st.columns(2, gap="medium")
-            with d1:
-                fr = go.Figure(go.Scatter(x=oof, y=resid, mode="markers",
-                                          marker=dict(color=TOK["primary"], size=6, opacity=0.6)))
-                fr.add_hline(y=0, line=dict(color=TOK["ink"], dash="dot"))
-                fr.update_layout(title="잔차 vs 예측값", xaxis_title="예측", yaxis_title="잔차", height=380)
-                style_fig(fr)
-                st.plotly_chart(fr, use_container_width=True, config={"displayModeBar": False})
-            with d2:
-                (osm, osr), _ = probplot(resid, dist="norm")
-                fq = go.Figure()
-                fq.add_trace(go.Scatter(x=osm, y=osr, mode="markers", marker=dict(color=TOK["primary"], size=6)))
-                fq.add_trace(go.Scatter(x=osm, y=osm * np.std(resid), mode="lines",
-                                        line=dict(color=TOK["ink"], dash="dot")))
-                fq.update_layout(title="Q-Q Plot (잔차 정규성)", showlegend=False, height=380)
-                style_fig(fq)
-                st.plotly_chart(fq, use_container_width=True, config={"displayModeBar": False})
+            st.markdown(f'<div class="caption" style="margin-bottom:8px">왼쪽 = <b>VIF ({nv}개)</b> · '
+                        f'오른쪽 = <b>VIF+중요도 ({ni}개)</b>. 점이 점선에 붙을수록 정규성 충족.</div>',
+                        unsafe_allow_html=True)
 
-            # ── SHAP Summary
+            def _resid_plot(_oof, ttl, col):
+                rsd = y - np.asarray(_oof, float)
+                fr = go.Figure(go.Scatter(x=_oof, y=rsd, mode="markers",
+                                          marker=dict(color=TOK["primary"], size=5, opacity=0.55)))
+                fr.add_hline(y=0, line=dict(color=TOK["ink"], dash="dot"))
+                fr.update_layout(title=ttl, xaxis_title="예측", yaxis_title="잔차", height=340)
+                style_fig(fr)
+                col.plotly_chart(fr, use_container_width=True, config={"displayModeBar": False})
+
+            def _qq_plot(_oof, ttl, col):
+                rsd = y - np.asarray(_oof, float)
+                (osm, osr), _ = probplot(rsd, dist="norm")
+                fq = go.Figure()
+                fq.add_trace(go.Scatter(x=osm, y=osr, mode="markers", marker=dict(color=TOK["primary"], size=5)))
+                fq.add_trace(go.Scatter(x=osm, y=osm * np.std(rsd), mode="lines",
+                                        line=dict(color=TOK["ink"], dash="dot")))
+                fq.update_layout(title=ttl, showlegend=False, height=340,
+                                 xaxis_title="이론 분위수", yaxis_title="잔차 분위수")
+                style_fig(fq)
+                col.plotly_chart(fq, use_container_width=True, config={"displayModeBar": False})
+
+            rc = st.columns(2, gap="medium")
+            _resid_plot(Dv["oof"], f"잔차 vs 예측 · VIF ({nv}개)", rc[0])
+            _resid_plot(D["oof"], f"잔차 vs 예측 · VIF+중요도 ({ni}개)", rc[1])
+            qc = st.columns(2, gap="medium")
+            _qq_plot(Dv["oof"], f"Q-Q · VIF ({nv}개)", qc[0])
+            _qq_plot(D["oof"], f"Q-Q · VIF+중요도 ({ni}개)", qc[1])
+
+            # ── SHAP 해석: VIF 전후 비교 (좌:VIF 24 / 우:VIF+중요도 6)
             exp_name = "Linear" if kind == "linear" else "Tree"
-            st.markdown(f'<h2 class="h-section" style="margin-top:22px">SHAP 해석 ({exp_name}Explainer)</h2>',
+            st.markdown(f'<h2 class="h-section" style="margin-top:24px">SHAP 해석 — VIF 전후 비교 ({exp_name}Explainer)</h2>',
                         unsafe_allow_html=True)
-            st.markdown('<div class="caption" style="margin-bottom:6px">각 점 = 한 예측 · 가로축 = SHAP value '
-                        '(예측 기여) · 색 = 표준화 변수값(빨강 높음 / 파랑 낮음).</div>', unsafe_allow_html=True)
-            fig_s = plt.figure(figsize=(9, 5))
-            shap.summary_plot(sv, features=Z, feature_names=diag_cols, max_display=len(diag_cols), show=False)
-            plt.title(f"SHAP Summary ({best} · VIF+중요도)", fontsize=12)
-            plt.tight_layout()
-            st.pyplot(fig_s, clear_figure=True)
+            st.markdown(f'<div class="caption" style="margin-bottom:6px">왼쪽 = <b>VIF ({nv}개)</b> · '
+                        f'오른쪽 = <b>VIF+중요도 ({ni}개)</b>. 가로축 = SHAP value(예측 기여), 색 = 표준화 변수값.</div>',
+                        unsafe_allow_html=True)
+            sc = st.columns(2, gap="medium")
+            with sc[0]:
+                figv = plt.figure(figsize=(7, 5))
+                shap.summary_plot(Dv["sv"], features=Dv["Z"], feature_names=Dv["cols"],
+                                  max_display=min(12, len(Dv["cols"])), show=False)
+                plt.title(f"VIF ({nv}개)", fontsize=12)
+                plt.tight_layout()
+                st.pyplot(figv, clear_figure=True)
+            with sc[1]:
+                figt = plt.figure(figsize=(7, 5))
+                shap.summary_plot(sv, features=Z, feature_names=diag_cols, max_display=len(diag_cols), show=False)
+                plt.title(f"VIF+중요도 ({ni}개)", fontsize=12)
+                plt.tight_layout()
+                st.pyplot(figt, clear_figure=True)
 
             # ── 개별 예측: Force + LIME
             st.markdown('<h2 class="h-section" style="margin-top:26px">개별 예측 — Force plot · LIME</h2>',
