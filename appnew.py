@@ -970,7 +970,7 @@ if page == "개요":
 # ── 헤더 행: 미니맵(2칸) + 공원/분석 선택 카드 (클릭 가능)
 PAGE_DESC = {
     "개요": "전체 요약 · 한눈에 보기", "EDA": "탐색적 데이터 분석",
-    "t-test & VIF": "피처 선별 · 공선성", "모델 예측": "비교1 · VIF 5모델 + 학습곡선",
+    "t-test & VIF": "피처 선별 · 공선성", "모델 예측": "비교1 · VIF 모델 비교(업로드 결과)",
     "예측 시뮬레이터": "입력 → 실시간 예측", "Conformal": "예측 구간",
     "Bootstrap CI": "성능 신뢰구간", "Nested CV": "일반화 추정",
     "신규 모델 (HSKR)": "HSKR vs Ridge · 11공원",
@@ -1102,7 +1102,7 @@ if page == "개요":
     FEATURES = [
         ("EDA",            "chart",    "월별 추이 · 계절성 · 변수 분포"),
         ("t-test & VIF",   "scatter",  "유의 피처 선별 · 공선성 제거"),
-        ("모델 예측",       "model",    "비교1: VIF 적용 5개 모델 + 학습곡선"),
+        ("모델 예측",       "model",    "비교1: VIF 적용 모델 비교 + 학습곡선"),
         ("신규 모델 (HSKR)", "spark",    "내가 만든 HSKR vs 기존 · 11공원"),
         ("핵심 변수 선별 효과", "model",  "비교2: VIF+중요도(1등 모델) + 진단"),
         ("예측 시뮬레이터",  "boot",     "입력 조정 → 실시간 예측"),
@@ -1591,79 +1591,92 @@ elif page == "t-test & VIF":
 elif page == "모델 예측":
     tile_open("light", anchor="model")
     st.markdown("""
-    <h2 class="h-display" style="color:var(--ink)">비교 1 — VIF 적용 · 5개 모델</h2>
-    <p class="lead">다중공선성(VIF)을 제거한 피처로 ML 5개(Ridge·ElasticNet·GradientBoosting·RandomForest·ExtraTrees)를
-    교차검증 비교해 최고 모델을 고릅니다.</p>
+    <h2 class="h-display" style="color:var(--ink)">비교 1 — VIF 적용 · 모델 비교</h2>
+    <p class="lead">다중공선성(VIF)을 제거한 피처로 학습한 모델들의 성능을 비교해 최고 표준 ML 모델을 고릅니다.
+    수치는 업로드한 분석 결과(fi_models.pkl) 그대로입니다.</p>
     """, unsafe_allow_html=True)
     tile_close()
 
-    MC, mc_err = load_model_compare()
+    FB, fi_err = load_fi()
+    MC, _ = load_model_compare()
     tile_open("light")
-    st.markdown('<h2 class="h-section">VIF 적용 후 5개 모델 성능</h2>', unsafe_allow_html=True)
-    if MC is None:
+    st.markdown('<h2 class="h-section">VIF 적용 피처로 학습한 모델 성능</h2>', unsafe_allow_html=True)
+    if FB is None:
         st.markdown(f"""
         <div class="card">
-          <div class="body-strong">모델 비교 데이터를 불러올 수 없습니다</div>
+          <div class="body-strong">분석 결과(fi_models.pkl)를 불러올 수 없습니다</div>
           <div class="caption" style="margin-top:8px; line-height:1.7">
-            <b>build_model_compare.py</b> 실행으로 <b>model/model_compare.pkl</b>을 생성하세요.<br/>
-            진단: <code>{mc_err}</code>
+            <b>model/fi_models.pkl</b>이 필요합니다.<br/>진단: <code>{fi_err}</code>
           </div>
         </div>
         """, unsafe_allow_html=True)
     else:
-        mm = MC["metrics_vif"]
-        models = list(MC["models"])
-        best = MC["best"]
-        nb, nv = len(MC["base_feats"]), len(MC["vif_keep"])
-        drop_txt = ", ".join(f"{c}(VIF {v})" for c, v in MC["vif_dropped"]) or "없음"
+        mf = FB["metrics_full"]
+        allf = list(FB["all_features"])
+        order = [m for m in ("Ridge", "ElasticNet", "GradientBoosting", "RandomForest", "ExtraTrees", "HSKR")
+                 if m in mf] + [m for m in mf if m not in
+                                ("Ridge", "ElasticNet", "GradientBoosting", "RandomForest", "ExtraTrees", "HSKR")]
+        std = [m for m in order if m != "HSKR"]
+        best = max(std, key=lambda m: mf[m]["R2"]) if std else order[0]
+        has_h = "HSKR" in mf
+
+        def _col(m):
+            return "#E8505B" if m == "HSKR" else (TOK["primary"] if m == best else TOK["ink_48"])
 
         k1, k2, k3 = st.columns(3, gap="medium")
-        k1.markdown(metric_card(f"{nb}→{nv}", "VIF 후 피처 수"), unsafe_allow_html=True)
-        k2.markdown(metric_card(best, f"최고 모델 · R² {mm[best]['R2']:.3f}"), unsafe_allow_html=True)
-        k3.markdown(metric_card(f"{mm[best]['RMSE']/1e4:.1f}만", f"{best} RMSE"), unsafe_allow_html=True)
-        st.markdown(f'<div class="caption" style="margin:10px 0 16px 0;line-height:1.6">엄선 base {nb}개 피처에 '
-                    f'Stepwise VIF(&gt;10) 적용 → {nv}개 (제거 후 최대 VIF {MC["max_vif_left"]:.1f}). '
-                    f'5-fold 교차검증(OOF) · 공원 원핫·계절성 미사용.<br/>제거 변수: {drop_txt}.</div>',
-                    unsafe_allow_html=True)
+        k1.markdown(metric_card(f"{len(allf)}개", "VIF 적용 피처 수"), unsafe_allow_html=True)
+        k2.markdown(metric_card(best, f"최고 표준 ML · R² {mf[best]['R2']:.3f}"), unsafe_allow_html=True)
+        if has_h:
+            k3.markdown(metric_card(f"{mf['HSKR']['R2']:.3f}", "HSKR(신규모델) R²", delta="+신규 모델 페이지"),
+                        unsafe_allow_html=True)
+        else:
+            k3.markdown(metric_card(f"{mf[best]['RMSE']/1e4:.1f}만", f"{best} RMSE"), unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin:10px 0 16px 0;line-height:1.6">수치 = 업로드한 '
+                    '<b>fi_models.pkl</b>(VIF 적용 24개 피처) 그대로. 표준 ML 중 <b style="color:var(--primary)">'
+                    f'{best}</b>가 1등. <b style="color:#E8505B">HSKR</b>은 직접 만든 신규 모델로 '
+                    '신규 모델 페이지에서 별도 비교합니다.</div>', unsafe_allow_html=True)
 
         ca, cb = st.columns(2, gap="medium")
         with ca:
-            fr = go.Figure(go.Bar(x=[mm[m]["R2"] for m in models], y=models, orientation="h",
-                                  marker_color=[TOK["primary"] if m == best else TOK["ink_48"] for m in models],
-                                  text=[f"{mm[m]['R2']:.3f}" for m in models], textposition="outside"))
-            fr.update_layout(title="CV R² (높을수록 우수 · 파랑=1등)", height=360, xaxis_title="R²", margin=dict(r=70))
+            fr = go.Figure(go.Bar(x=[mf[m]["R2"] for m in order], y=order, orientation="h",
+                                  marker_color=[_col(m) for m in order],
+                                  text=[f"{mf[m]['R2']:.3f}" for m in order], textposition="outside"))
+            fr.update_layout(title="R² (높을수록 우수 · 파랑=최고 표준ML)", height=360, xaxis_title="R²", margin=dict(r=70))
             style_fig(fr)
             st.plotly_chart(fr, use_container_width=True, config={"displayModeBar": False})
         with cb:
-            fe = go.Figure(go.Bar(x=[mm[m]["RMSE"] / 1e4 for m in models], y=models, orientation="h",
-                                  marker_color=[TOK["primary"] if m == best else TOK["ink_48"] for m in models],
-                                  text=[f"{mm[m]['RMSE']/1e4:.1f}" for m in models], textposition="outside"))
-            fe.update_layout(title="CV RMSE(만, 낮을수록 우수)", height=360, xaxis_title="RMSE(만)", margin=dict(r=70))
+            fe = go.Figure(go.Bar(x=[mf[m]["RMSE"] / 1e4 for m in order], y=order, orientation="h",
+                                  marker_color=[_col(m) for m in order],
+                                  text=[f"{mf[m]['RMSE']/1e4:.1f}" for m in order], textposition="outside"))
+            fe.update_layout(title="RMSE(만, 낮을수록 우수)", height=360, xaxis_title="RMSE(만)", margin=dict(r=70))
             style_fig(fe)
             st.plotly_chart(fe, use_container_width=True, config={"displayModeBar": False})
 
-        cmp_df = pd.DataFrame([{"모델": m, "R²": round(mm[m]["R2"], 3), "R²_std": round(mm[m].get("R2_std", 0.0), 3),
-                                "RMSE(만)": round(mm[m]["RMSE"] / 1e4, 1), "MAE(만)": round(mm[m]["MAE"] / 1e4, 1),
-                                "1등": "★" if m == best else ""} for m in models])
+        cmp_df = pd.DataFrame([{"모델": m, "R²": round(mf[m]["R2"], 3),
+                                "RMSE(만)": round(mf[m]["RMSE"] / 1e4, 1),
+                                "비고": "신규모델" if m == "HSKR" else ("★ 최고 표준ML" if m == best else "")}
+                               for m in order])
         st.dataframe(cmp_df, use_container_width=True, hide_index=True)
         st.download_button("⬇️ 모델 성능표 CSV", cmp_df.to_csv(index=False).encode("utf-8-sig"),
-                           "model_compare_vif.csv", "text/csv")
-        st.markdown(f'<div class="caption" style="margin-top:8px">→ 1등 <b style="color:var(--primary)">{best}</b>은 '
-                    f"<b>핵심 변수 선별 효과</b> 페이지(비교 2)에서 VIF+중요도 축소·진단에 사용됩니다.</div>",
-                    unsafe_allow_html=True)
+                           "model_compare.csv", "text/csv")
+        st.markdown(f'<div class="caption" style="margin-top:8px">→ 최고 표준 ML '
+                    f'<b style="color:var(--primary)">{best}</b>은 <b>핵심 변수 선별 효과</b>(비교 2)에서 '
+                    f'VIF+중요도 축소·진단에 사용됩니다.</div>', unsafe_allow_html=True)
 
-        st.markdown('<h2 class="h-section" style="margin-top:30px">모델별 Learning Curve (VIF 피처)</h2>',
-                    unsafe_allow_html=True)
-        st.markdown('<div class="caption" style="margin-bottom:10px">훈련 표본 수를 늘려가며 학습·검증 R²를 봅니다. '
-                    '두 곡선이 수렴하면 데이터 충분, 갭이 크면 과적합.</div>', unsafe_allow_html=True)
-        lcs = MC["lc"]
-        names = list(lcs.keys())
-        for r in range(0, len(names), 3):
-            rowm = names[r:r + 3]
-            lcols = st.columns(len(rowm), gap="medium")
-            for nm, col in zip(rowm, lcols):
-                _plot_lc(nm, lcs[nm], col)
-        st.caption("※ model/model_compare.pkl 사전계산(build_model_compare.py).")
+        if MC and MC.get("lc"):
+            st.markdown('<h2 class="h-section" style="margin-top:30px">모델별 Learning Curve</h2>',
+                        unsafe_allow_html=True)
+            st.markdown('<div class="caption" style="margin-bottom:10px">훈련 표본 수를 늘려가며 학습·검증 R²를 봅니다. '
+                        '두 곡선이 수렴하면 데이터 충분, 갭이 크면 과적합.</div>', unsafe_allow_html=True)
+            lcs = MC["lc"]
+            names = list(lcs.keys())
+            for r in range(0, len(names), 3):
+                rowm = names[r:r + 3]
+                lcols = st.columns(len(rowm), gap="medium")
+                for nm, col in zip(rowm, lcols):
+                    _plot_lc(nm, lcs[nm], col)
+            st.caption("※ 학습곡선은 동일 24개 피처로 앱에서 사전계산(참고용·곡선 형태 기준). "
+                       "성능 수치(위 표)는 업로드한 fi_models.pkl 기준이라 절대 R²는 다를 수 있습니다.")
     tile_close()
 
 
@@ -1839,26 +1852,28 @@ elif page == "핵심 변수 선별 효과":
                 '정량 비교하고 Q-Q·잔차·SHAP·Force·LIME·변수 중요도로 해석합니다.</p>', unsafe_allow_html=True)
     tile_close()
 
-    MC, mc_err = load_model_compare()
+    FB, fi_err = load_fi()
     tile_open("light")
-    if MC is None:
-        st.markdown(f'<div class="card"><div class="body-strong">모델 비교 데이터를 불러올 수 없습니다</div>'
-                    f'<div class="caption" style="margin-top:8px">build_model_compare.py 실행으로 '
-                    f'model/model_compare.pkl 생성 필요.<br/>진단: <code>{mc_err}</code></div></div>',
-                    unsafe_allow_html=True)
+    if FB is None:
+        st.markdown(f'<div class="card"><div class="body-strong">분석 결과(fi_models.pkl)를 불러올 수 없습니다</div>'
+                    f'<div class="caption" style="margin-top:8px">model/fi_models.pkl 필요.<br/>'
+                    f'진단: <code>{fi_err}</code></div></div>', unsafe_allow_html=True)
     else:
         try:
             from scipy.stats import probplot
             import shap
             import matplotlib.pyplot as plt
 
-            best, kind = MC["best"], MC["best_kind"]
-            vif_keep, imp_keep = list(MC["vif_keep"]), list(MC["imp_keep"])
-            importance = MC["importance"]
-            mv, mi = MC["metrics_best_vif"], MC["metrics_best_imp"]
-            nv, ni = len(vif_keep), len(imp_keep)
+            mf, mt = FB["metrics_full"], FB["metrics_top"]
+            allf, topf = list(FB["all_features"]), list(FB["top_features"])
+            importance = FB.get("importance", {})
+            std = [m for m in mf if m != "HSKR"]
+            best = max(std, key=lambda m: mf[m]["R2"]) if std else list(mf)[0]
+            kind = "linear" if best in ("Ridge", "ElasticNet") else "tree"
+            mvb, mtb = mf[best], mt[best]      # 업로드 pkl 기준 best 모델 full vs top
+            nv, ni = len(allf), len(topf)
 
-            @st.cache_resource(show_spinner=f"{best} 학습·SHAP 계산 중...")
+            @st.cache_resource(show_spinner=f"{best} 진단 모델 학습·SHAP 계산 중...")
             def _diag(_pm, best, cols):
                 from sklearn.base import clone
                 from sklearn.preprocessing import StandardScaler
@@ -1871,70 +1886,82 @@ elif page == "핵심 변수 선별 효과":
                        "GradientBoosting": GradientBoostingRegressor(random_state=42),
                        "RandomForest": RandomForestRegressor(n_estimators=400, random_state=42, n_jobs=-1),
                        "ExtraTrees": ExtraTreesRegressor(n_estimators=400, random_state=42, n_jobs=-1)}
-                cols = list(cols)
+                cols = [c for c in cols if c in _pm.columns]
                 X = _pm[cols].astype(float).fillna(0).values
                 y = _pm["총이용객"].values.astype(float)
                 Z = StandardScaler().fit_transform(X)
-                mdl = clone(FAC[best]).fit(Z, y)
-                oof = cross_val_predict(clone(FAC[best]), Z, y, cv=KFold(5, shuffle=True, random_state=42))
+                est = FAC.get(best, Ridge(alpha=10.0))
+                mdl = clone(est).fit(Z, y)
+                oof = cross_val_predict(clone(est), Z, y, cv=KFold(5, shuffle=True, random_state=42))
                 if best in ("Ridge", "ElasticNet"):
                     ex = shap.LinearExplainer(mdl, Z)
                 else:
                     ex = shap.TreeExplainer(mdl)
                 sv = np.asarray(ex.shap_values(Z))
                 base_val = float(np.ravel(ex.expected_value)[0])
-                return dict(Z=Z, y=y, oof=oof, mdl=mdl, sv=sv, base_val=base_val)
+                return dict(Z=Z, y=y, oof=oof, mdl=mdl, sv=sv, base_val=base_val,
+                            cols=[c for c in cols if c in _pm.columns])
 
-            D = _diag(pm, best, tuple(imp_keep))
+            D = _diag(pm, best, tuple(topf))
             Z, y, oof, mdl, sv, base_val = D["Z"], D["y"], D["oof"], D["mdl"], D["sv"], D["base_val"]
+            diag_cols = D["cols"]
 
-            # ── 비교2: VIF vs VIF+중요도 (1등 모델)
-            st.markdown(f'<h2 class="h-section">실험 결과 — VIF vs VIF+중요도 ({best})</h2>', unsafe_allow_html=True)
-            st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6">비교 1 1등 '
-                        f'<b style="color:var(--primary)">{best}</b>({kind})에 VIF 피처 <b>{nv}개</b> vs '
-                        f'중요도 상위 <b>{ni}개</b>를 적용한 5-fold CV 성능. 변수를 {nv}→{ni}개로 줄여도 성능이 '
-                        f'유지되는지 봅니다.</div>', unsafe_allow_html=True)
+            # ── 비교2: VIF vs VIF+중요도 (업로드 pkl 수치) — 전 모델 + best 강조
+            st.markdown('<h2 class="h-section">실험 결과 — VIF vs VIF+중요도 (업로드 분석 결과)</h2>',
+                        unsafe_allow_html=True)
+            st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6">업로드한 <b>fi_models.pkl</b> '
+                        f'기준. VIF 적용 <b>{nv}개</b> 피처 vs 중요도 상위 <b>{ni}개</b>로 줄였을 때의 성능. '
+                        f'표준 ML 1등은 <b style="color:var(--primary)">{best}</b>(HSKR은 신규 모델, 별도). '
+                        f'변수를 {nv}→{ni}개로 줄여도 성능이 유지되는지 봅니다.</div>', unsafe_allow_html=True)
             k1, k2, k3 = st.columns(3, gap="medium")
             k1.markdown(metric_card(f"{nv}→{ni}", "피처 수 (VIF→VIF+중요도)"), unsafe_allow_html=True)
-            k2.markdown(metric_card(f"{mi['R2']:.3f}", "VIF+중요도 R²",
-                                    delta=f"{mi['R2']-mv['R2']:+.3f} vs VIF {mv['R2']:.3f}"), unsafe_allow_html=True)
-            k3.markdown(metric_card(f"{mi['RMSE']/1e4:.1f}만", "VIF+중요도 RMSE",
-                                    delta=f"{(mi['RMSE']-mv['RMSE'])/1e4:+.1f}만 vs VIF"), unsafe_allow_html=True)
-            exp_df = pd.DataFrame([
-                {"구분": f"VIF ({nv}개)", "R²": round(mv["R2"], 4),
-                 "RMSE(만)": round(mv["RMSE"] / 1e4, 1), "MAE(만)": round(mv["MAE"] / 1e4, 1)},
-                {"구분": f"VIF+중요도 ({ni}개)", "R²": round(mi["R2"], 4),
-                 "RMSE(만)": round(mi["RMSE"] / 1e4, 1), "MAE(만)": round(mi["MAE"] / 1e4, 1)},
-            ])
+            k2.markdown(metric_card(f"{mtb['R2']:.3f}", f"{best} · VIF+중요도 R²",
+                                    delta=f"{mtb['R2']-mvb['R2']:+.3f} vs VIF {mvb['R2']:.3f}"), unsafe_allow_html=True)
+            k3.markdown(metric_card(f"{mtb['RMSE']/1e4:.1f}만", f"{best} · VIF+중요도 RMSE",
+                                    delta=f"{(mtb['RMSE']-mvb['RMSE'])/1e4:+.1f}만 vs VIF"), unsafe_allow_html=True)
+
+            order = [m for m in ("Ridge", "ElasticNet", "GradientBoosting", "RandomForest", "ExtraTrees", "HSKR")
+                     if m in mf]
+            exp_df = pd.DataFrame([{"모델": m, f"VIF_R²({nv})": round(mf[m]["R2"], 4),
+                                    f"VIF+중요도_R²({ni})": round(mt[m]["R2"], 4),
+                                    "R²_변화": round(mt[m]["R2"] - mf[m]["R2"], 4)} for m in order])
             ca, cb = st.columns([2, 3], gap="medium")
             ca.dataframe(exp_df, use_container_width=True, hide_index=True)
             with cb:
-                fx = go.Figure(go.Bar(x=[f"VIF({nv})", f"VIF+중요도({ni})"], y=[mv["R2"], mi["R2"]],
-                                      marker_color=TOK["primary"],
-                                      text=[f"{mv['R2']:.3f}", f"{mi['R2']:.3f}"], textposition="outside"))
-                fx.update_layout(title="VIF vs VIF+중요도 CV R²", height=300, yaxis_title="R²")
+                fx = go.Figure()
+                fx.add_trace(go.Bar(name=f"VIF ({nv})", x=order, y=[mf[m]["R2"] for m in order],
+                                    marker_color=TOK["ink_48"], text=[f"{mf[m]['R2']:.3f}" for m in order],
+                                    textposition="outside"))
+                fx.add_trace(go.Bar(name=f"VIF+중요도 ({ni})", x=order, y=[mt[m]["R2"] for m in order],
+                                    marker_color=TOK["primary"], text=[f"{mt[m]['R2']:.3f}" for m in order],
+                                    textposition="outside"))
+                fx.update_layout(barmode="group", title="모델별 R² — VIF vs VIF+중요도", height=320,
+                                 yaxis_title="R²", legend=dict(orientation="h", y=1.12))
                 style_fig(fx)
                 st.plotly_chart(fx, use_container_width=True, config={"displayModeBar": False})
 
-            # ── 변수 중요도 (1등 모델, VIF 피처) — 검색량 빨강 + 선택 top 강조
+            # ── 변수 중요도 (업로드 importance, VIF 24개) — 검색량 빨강 + 선택 top 강조
             st.markdown('<h2 class="h-section" style="margin-top:24px">변수 중요도 — 상위 '
                         f'{ni}개 선택</h2>', unsafe_allow_html=True)
             st.markdown('<div class="caption" style="margin-bottom:8px"><b style="color:#E8505B">빨강 = 검색량</b> · '
-                        f'<b style="color:var(--primary)">진한 파랑 = 선택된 상위 {ni}개</b> · 연회색 = 미선택</div>',
-                        unsafe_allow_html=True)
-            imp_df = pd.DataFrame({"변수": list(importance.keys()), "중요도": list(importance.values())})
-            imp_df = imp_df.sort_values("중요도")
-            sel = set(imp_keep)
+                        f'<b style="color:var(--primary)">진한 파랑 = 선택된 상위 {ni}개</b> · 연회색 = 미선택 '
+                        '(업로드 fi_models.pkl importance)</div>', unsafe_allow_html=True)
+            if importance:
+                imp_df = pd.DataFrame({"변수": list(importance.keys()),
+                                       "중요도": list(importance.values())}).sort_values("중요도")
+                sel = set(topf)
 
-            def _c(v):
-                return "#E8505B" if v == "검색량" else (TOK["primary"] if v in sel else TOK["ink_48"])
-            fi = go.Figure(go.Bar(x=imp_df["중요도"], y=imp_df["변수"], orientation="h",
-                                  marker_color=[_c(v) for v in imp_df["변수"]],
-                                  text=[f"{v:.3f}" for v in imp_df["중요도"]], textposition="outside"))
-            fi.update_layout(title=f"{best} 변수 중요도 (VIF {nv}개 중)", height=max(380, 24 * len(imp_df)),
-                             xaxis_title="중요도", margin=dict(l=10, r=60))
-            style_fig(fi)
-            st.plotly_chart(fi, use_container_width=True, config={"displayModeBar": False})
+                def _c(v):
+                    return "#E8505B" if v == "검색량" else (TOK["primary"] if v in sel else TOK["ink_48"])
+                fi = go.Figure(go.Bar(x=imp_df["중요도"], y=imp_df["변수"], orientation="h",
+                                      marker_color=[_c(v) for v in imp_df["변수"]],
+                                      text=[f"{v:.3f}" for v in imp_df["중요도"]], textposition="outside"))
+                fi.update_layout(title=f"변수 중요도 (VIF {nv}개 중 · 빨강=검색량, 파랑=선택 {ni})",
+                                 height=max(380, 24 * len(imp_df)), xaxis_title="중요도", margin=dict(l=10, r=60))
+                style_fig(fi)
+                st.plotly_chart(fi, use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.caption("importance 정보가 fi_models.pkl에 없습니다.")
 
             # ── 잔차 진단: Residual + Q-Q (VIF+중요도 모델 OOF)
             resid = y - oof
@@ -1965,7 +1992,7 @@ elif page == "핵심 변수 선별 효과":
             st.markdown('<div class="caption" style="margin-bottom:6px">각 점 = 한 예측 · 가로축 = SHAP value '
                         '(예측 기여) · 색 = 표준화 변수값(빨강 높음 / 파랑 낮음).</div>', unsafe_allow_html=True)
             fig_s = plt.figure(figsize=(9, 5))
-            shap.summary_plot(sv, features=Z, feature_names=imp_keep, max_display=ni, show=False)
+            shap.summary_plot(sv, features=Z, feature_names=diag_cols, max_display=len(diag_cols), show=False)
             plt.title(f"SHAP Summary ({best} · VIF+중요도)", fontsize=12)
             plt.tight_layout()
             st.pyplot(fig_s, clear_figure=True)
@@ -1985,13 +2012,13 @@ elif page == "핵심 변수 선별 효과":
             st.markdown('<div class="caption" style="margin:6px 0 4px 0">기준값에서 '
                         '<b style="color:#ff0d57">빨강(↑)</b> · <b style="color:#1e88e5">파랑(↓)</b> '
                         '변수 기여를 거쳐 최종 예측에 도달합니다. (변수값은 표준화 z-score)</div>', unsafe_allow_html=True)
-            shap.force_plot(base_val, sv[idx, :], features=np.round(Z[idx, :], 2), feature_names=imp_keep,
+            shap.force_plot(base_val, sv[idx, :], features=np.round(Z[idx, :], 2), feature_names=diag_cols,
                             matplotlib=True, show=False, figsize=(20, 3), text_rotation=12)
             st.pyplot(plt.gcf(), clear_figure=True)
 
             st.markdown('<div class="body-strong" style="margin-top:18px">LIME — 국소 선형 근사 (경량 자체구현)</div>',
                         unsafe_allow_html=True)
-            lime_df = lime_explain(mdl.predict, Z[idx], Z, imp_keep, n_top=min(12, ni))
+            lime_df = lime_explain(mdl.predict, Z[idx], Z, diag_cols, n_top=min(12, len(diag_cols)))
             colL = ["#E8505B" if v < 0 else TOK["primary"] for v in lime_df["국소기여"]]
             fl = go.Figure(go.Bar(x=lime_df["국소기여"], y=lime_df["변수"], orientation="h", marker_color=colL,
                                   text=[f"{v/1e3:+.1f}K" for v in lime_df["국소기여"]], textposition="outside"))
@@ -2005,7 +2032,7 @@ elif page == "핵심 변수 선별 효과":
 
             # ── 다운로드
             st.markdown('<h2 class="h-section" style="margin-top:18px">다운로드</h2>', unsafe_allow_html=True)
-            shap_imp = (pd.DataFrame({"변수": imp_keep, "평균_abs_SHAP": np.abs(sv).mean(0)})
+            shap_imp = (pd.DataFrame({"변수": diag_cols, "평균_abs_SHAP": np.abs(sv).mean(0)})
                         .sort_values("평균_abs_SHAP", ascending=False))
             dd = st.columns(3, gap="medium")
             dd[0].download_button("⬇️ VIF/중요도 실험표 CSV", exp_df.to_csv(index=False).encode("utf-8-sig"),
