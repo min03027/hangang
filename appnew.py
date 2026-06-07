@@ -1724,15 +1724,15 @@ elif page == "신규 모델 (HSKR)":
 
         st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6">HSKR(계절+커널)을 '
                     f'<b>전 {len(parks)}개 공원</b>에 공원별로 학습해 기존 Ridge와 비교합니다. '
-                    f'HSKR이 <b>{n_win}/{len(parks)}개 공원</b>에서 RMSE를 낮췄습니다. 아래는 테스트 구간을 합친 '
-                    f'<b>전체 성능</b> — 풀링 R²는 공원 간 스케일 차(수만~수백만)로 낮게 나오므로 '
-                    f'<b>RMSE 감소율</b>이 핵심 지표입니다.</div>',
+                    f'평가지표는 <b>R²</b>와 <b>RMSE</b>. HSKR이 R²·RMSE 모두에서 Ridge를 앞서며 '
+                    f'<b>{n_win}/{len(parks)}개 공원</b>에서 RMSE를 낮췄습니다. 아래 전체값은 테스트 구간 풀링이라 '
+                    f'공원 간 스케일 차(수만~수백만)로 R²가 낮게 나옵니다(공원별 R²는 아래 상세 참고).</div>',
                     unsafe_allow_html=True)
         g1, g2, g3 = st.columns(3, gap="medium")
-        g1.markdown(metric_card(f"+{ov_red:.1f}%", "전체 RMSE 감소율", delta="+vs Ridge"), unsafe_allow_html=True)
+        g1.markdown(metric_card(f"{hk_r2:.3f}", "전체 R² (HSKR)", delta=f"+Ridge {rg_r2:.3f}"), unsafe_allow_html=True)
         g2.markdown(metric_card(f"{hk_rmse/1e4:.1f}만", "전체 RMSE (HSKR)",
                                 delta=f"+Ridge {rg_rmse/1e4:.1f}만"), unsafe_allow_html=True)
-        g3.markdown(metric_card(f"{n_win}/{len(parks)}", "HSKR 우세 공원 수"), unsafe_allow_html=True)
+        g3.markdown(metric_card(f"+{ov_red:.1f}%", "RMSE 감소율", delta="+vs Ridge"), unsafe_allow_html=True)
         fov = go.Figure(go.Bar(x=[hk_rmse / 1e4, rg_rmse / 1e4], y=["HSKR", "Ridge(기존)"], orientation="h",
                                marker_color=[TOK["primary"], "#E8505B"],
                                text=[f"{hk_rmse/1e4:.1f}만", f"{rg_rmse/1e4:.1f}만"], textposition="outside"))
@@ -1829,8 +1829,7 @@ elif page == "신규 모델 (HSKR)":
         # ── 지표 표 + 요약
         st.markdown('<h2 class="h-section" style="margin-top:12px">성능 지표 표</h2>', unsafe_allow_html=True)
         mdf = pd.DataFrame([{"모델": m, "R²": round(met[m]["R2"], 3),
-                             "RMSE(만)": round(met[m]["RMSE"] / 1e4, 1),
-                             "MAE(만)": round(met[m]["MAE"] / 1e4, 1)} for m in order])
+                             "RMSE(만)": round(met[m]["RMSE"] / 1e4, 1)} for m in order])
         st.dataframe(mdf, use_container_width=True, hide_index=True)
         if core:
             avg_red = float(np.mean([_red(p) for p in core]))
@@ -1920,23 +1919,17 @@ elif page == "핵심 변수 선별 효과":
             k3.markdown(metric_card(f"{mtb['RMSE']/1e4:.1f}만", f"{best} · VIF+중요도 RMSE",
                                     delta=f"{(mtb['RMSE']-mvb['RMSE'])/1e4:+.1f}만 vs VIF"), unsafe_allow_html=True)
 
-            order = [m for m in ("Ridge", "ElasticNet", "GradientBoosting", "RandomForest", "ExtraTrees", "HSKR")
-                     if m in mf]
-            exp_df = pd.DataFrame([{"모델": m, f"VIF_R²({nv})": round(mf[m]["R2"], 4),
-                                    f"VIF+중요도_R²({ni})": round(mt[m]["R2"], 4),
-                                    "R²_변화": round(mt[m]["R2"] - mf[m]["R2"], 4)} for m in order])
+            exp_df = pd.DataFrame([
+                {"구분": f"VIF ({nv}개)", "R²": round(mvb["R2"], 4), "RMSE(만)": round(mvb["RMSE"] / 1e4, 1)},
+                {"구분": f"VIF+중요도 ({ni}개)", "R²": round(mtb["R2"], 4), "RMSE(만)": round(mtb["RMSE"] / 1e4, 1)},
+            ])
             ca, cb = st.columns([2, 3], gap="medium")
             ca.dataframe(exp_df, use_container_width=True, hide_index=True)
             with cb:
-                fx = go.Figure()
-                fx.add_trace(go.Bar(name=f"VIF ({nv})", x=order, y=[mf[m]["R2"] for m in order],
-                                    marker_color=TOK["ink_48"], text=[f"{mf[m]['R2']:.3f}" for m in order],
-                                    textposition="outside"))
-                fx.add_trace(go.Bar(name=f"VIF+중요도 ({ni})", x=order, y=[mt[m]["R2"] for m in order],
-                                    marker_color=TOK["primary"], text=[f"{mt[m]['R2']:.3f}" for m in order],
-                                    textposition="outside"))
-                fx.update_layout(barmode="group", title="모델별 R² — VIF vs VIF+중요도", height=320,
-                                 yaxis_title="R²", legend=dict(orientation="h", y=1.12))
+                fx = go.Figure(go.Bar(x=[f"VIF({nv})", f"VIF+중요도({ni})"], y=[mvb["R2"], mtb["R2"]],
+                                      marker_color=TOK["primary"],
+                                      text=[f"{mvb['R2']:.3f}", f"{mtb['R2']:.3f}"], textposition="outside"))
+                fx.update_layout(title=f"{best} R² — VIF vs VIF+중요도", height=320, yaxis_title="R²")
                 style_fig(fx)
                 st.plotly_chart(fx, use_container_width=True, config={"displayModeBar": False})
 
