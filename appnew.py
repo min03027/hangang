@@ -659,6 +659,96 @@ def load_fi():
     return None, "파일 없음: model/fi_models.pkl (또는 루트)"
 
 
+# ─────────────────────────────────────────────────────────────
+# 공원별 재선정: 선택 공원만 VIF→모델비교→(공원별 1등 모델) 중요도→top-K 실시간 재계산.
+#   업로드 fi_models.pkl의 하이퍼파라미터(models_top)·VIF 후보풀(all_features) 그대로 사용.
+#   공원당 ≈74행이라 그 공원에서 변동 없는(상수) 시설 컬럼은 후보에서 제외.
+# ─────────────────────────────────────────────────────────────
+@st.cache_data(show_spinner="선택 공원 VIF·모델·중요도 재계산 중...")
+def per_park_fi(_pm, _models_top, park, candidate_feats, top_k=6, vif_thresh=10.0):
+    from sklearn.base import clone
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.model_selection import KFold, cross_val_predict
+    from sklearn.metrics import r2_score, mean_squared_error
+    from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+    sub = _pm[_pm["공원명"] == park]
+    y = sub["총이용객"].values.astype(float)
+    pool = [c for c in candidate_feats
+            if c in sub.columns and sub[c].astype(float).std() > 1e-9]
+
+    # ── 공원별 VIF 재선정 (표준화 후 VIF>임계 최대값부터 반복 제거, 최소 2개 유지)
+    vf = list(pool)
+    while len(vf) > 2:
+        Z = StandardScaler().fit_transform(sub[vf].astype(float).fillna(0).values)
+        vifs = [variance_inflation_factor(Z, i) for i in range(Z.shape[1])]
+        j = int(np.argmax(vifs))
+        if vifs[j] > vif_thresh:
+            vf.pop(j)
+        else:
+            break
+
+    def _metrics(cols):
+        if not cols:
+            return {}
+        Z = StandardScaler().fit_transform(sub[cols].astype(float).fillna(0).values)
+        kf = KFold(5, shuffle=True, random_state=42)
+        out = {}
+        for nm, est in _models_top.items():
+            try:
+                oof = cross_val_predict(clone(est), Z, y, cv=kf)
+                out[nm] = {"R2": float(r2_score(y, oof)),
+                           "RMSE": float(mean_squared_error(y, oof) ** 0.5),
+                           "oof": np.asarray(oof, float)}
+            except Exception:
+                pass
+        return out
+
+    mfull = _metrics(vf)
+    best = max(mfull, key=lambda m: mfull[m]["R2"]) if mfull else None
+
+    # ── 공원별 1등 모델 자체 중요도(트리→feature_importances_, 선형→|표준화 계수|) → top-K
+    imp = {}
+    if best and vf:
+        Z = StandardScaler().fit_transform(sub[vf].astype(float).fillna(0).values)
+        m = clone(_models_top[best]).fit(Z, y)
+        if hasattr(m, "feature_importances_"):
+            raw = np.abs(np.asarray(m.feature_importances_, float))
+        else:
+            raw = np.abs(np.ravel(getattr(m, "coef_", np.zeros(len(vf)))))
+        s = float(raw.sum()) or 1.0
+        imp = {c: float(v) for c, v in sorted(zip(vf, raw / s), key=lambda x: -x[1])}
+    k = min(top_k, len(vf))
+    topf = list(imp)[:k] if imp else vf[:k]
+    mtop = _metrics(topf)
+    return dict(all_features=vf, top_features=topf, importance=imp,
+                metrics_full=mfull, metrics_top=mtop, best=best,
+                pool=pool, n=int(len(sub)))
+
+
+@st.cache_data(show_spinner=False)
+def per_park_lc(_pm, _models_top, park, feats):
+    """선택 공원·VIF피처로 모델별 learning curve 사전계산(참고용, 공원당 ≈74행)."""
+    from sklearn.base import clone
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.pipeline import Pipeline
+    from sklearn.model_selection import KFold, learning_curve
+    sub = _pm[_pm["공원명"] == park]
+    X = sub[list(feats)].astype(float).fillna(0)
+    y = sub["총이용객"].values.astype(float)
+    out = {}
+    for nm, est in _models_top.items():
+        try:
+            ts, tr, va = learning_curve(
+                Pipeline([("sc", StandardScaler()), ("e", clone(est))]), X, y,
+                train_sizes=np.linspace(0.3, 1.0, 5),
+                cv=KFold(4, shuffle=True, random_state=42), scoring="r2", n_jobs=-1)
+            out[nm] = {"train_sizes": ts, "train_scores": tr, "val_scores": va}
+        except Exception:
+            pass
+    return out
+
+
 def load_learning_curves():
     """사전 계산된 learning curve 결과 로드 (인앱 학습 없이 그리기 위함).
 
@@ -1587,16 +1677,14 @@ elif page == "t-test & VIF":
 elif page == "모델 예측":
     tile_open("light", anchor="model")
     st.markdown("""
-    <h2 class="h-display" style="color:var(--ink)">비교 1 — VIF 적용 · 모델 비교</h2>
-    <p class="lead">다중공선성(VIF)을 제거한 피처로 학습한 모델들의 성능을 비교해 최고 표준 ML 모델을 고릅니다.
-    수치는 업로드한 분석 결과(fi_models.pkl) 그대로입니다.</p>
+    <h2 class="h-display" style="color:var(--ink)">비교 1 — VIF 적용 · 모델 비교 (공원별)</h2>
+    <p class="lead">선택한 <b>개별 공원</b>에서 다중공선성(VIF)을 제거한 피처로 학습한 모델들의 성능을 비교해
+    그 공원의 최고 표준 ML 모델을 고릅니다. 업로드 pkl의 하이퍼파라미터로 공원별 실시간 재학습합니다.</p>
     """, unsafe_allow_html=True)
     tile_close()
 
     FB, fi_err = load_fi()
-    MC, _ = load_model_compare()
     tile_open("light")
-    st.markdown('<h2 class="h-section">VIF 적용 피처로 학습한 모델 성능</h2>', unsafe_allow_html=True)
     if FB is None:
         st.markdown(f"""
         <div class="card">
@@ -1608,12 +1696,24 @@ elif page == "모델 예측":
         """, unsafe_allow_html=True)
     else:
         from scipy.stats import probplot
-        mf = FB["metrics_full"]
-        allf = list(FB["all_features"])
+        cand = tuple(c for c in FB["all_features"] if c in pm.columns)
+        mt_models = FB["models_top"]
+        cpark = st.selectbox("공원 (전 11개 공원)", park_list,
+                             index=(park_list.index(selected_park) if selected_park in park_list else 0),
+                             key="m1_park")
+        st.markdown(f'<h2 class="h-section">VIF 적용 피처로 학습한 모델 성능 — '
+                    f'<span style="color:var(--primary)">{cpark}</span></h2>', unsafe_allow_html=True)
+        PF = per_park_fi(pm, mt_models, cpark, cand)
+        mf = PF["metrics_full"]
+        allf = list(PF["all_features"])
+        npool = len(PF["pool"])
         order = [m for m in ("Ridge", "ElasticNet", "GradientBoosting", "RandomForest", "ExtraTrees")
                  if m in mf] + [m for m in mf if m not in
                                 ("Ridge", "ElasticNet", "GradientBoosting", "RandomForest", "ExtraTrees", "HSKR")]
-        best = max(order, key=lambda m: mf[m]["R2"]) if order else None
+        best = PF["best"] or (max(order, key=lambda m: mf[m]["R2"]) if order else None)
+    if FB is not None and not order:
+        st.warning(f"{cpark}은 학습 가능한 변동 피처가 부족합니다.")
+    elif FB is not None:
 
         def _col(m):
             return TOK["primary"] if m == best else TOK["ink_48"]
@@ -1622,10 +1722,11 @@ elif page == "모델 예측":
         k1.markdown(metric_card(f"{len(order)}개", "비교 모델 수 (HSKR 제외)"), unsafe_allow_html=True)
         k2.markdown(metric_card(best, f"최고 모델 · R² {mf[best]['R2']:.3f}"), unsafe_allow_html=True)
         k3.markdown(metric_card(f"{mf[best]['RMSE']/1e4:.1f}만", f"{best} RMSE"), unsafe_allow_html=True)
-        st.markdown(f'<div class="caption" style="margin:10px 0 16px 0;line-height:1.6">수치 = 업로드한 '
-                    f'<b>fi_models.pkl</b>(VIF 적용 {len(allf)}개 피처) 그대로 · 머신러닝 <b>{len(order)}개</b> '
-                    f'(HSKR 제외). 최고 모델은 <b style="color:var(--primary)">{best}</b> '
-                    f'(R² {mf[best]["R2"]:.3f}).</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="caption" style="margin:10px 0 16px 0;line-height:1.6">'
+                    f'<b>{cpark}</b>(≈{PF["n"]}개월) 기준 · 변동 피처 {npool}개 중 VIF 적용 '
+                    f'<b>{len(allf)}개</b>로 학습 · 머신러닝 <b>{len(order)}개</b>(HSKR 제외). '
+                    f'이 공원의 최고 모델은 <b style="color:var(--primary)">{best}</b> '
+                    f'(5-fold CV R² {mf[best]["R2"]:.3f}).</div>', unsafe_allow_html=True)
 
         ca, cb = st.columns(2, gap="medium")
         with ca:
@@ -1649,16 +1750,16 @@ elif page == "모델 예측":
         st.dataframe(cmp_df, use_container_width=True, hide_index=True)
         st.download_button("⬇️ 모델 성능표 CSV", cmp_df.to_csv(index=False).encode("utf-8-sig"),
                            "model_compare.csv", "text/csv")
-        st.markdown('<div class="caption" style="margin-top:8px">→ <b>핵심 변수 선별 효과</b>(비교 2)에서는 '
-                    '결과가 가장 좋았던 <b style="color:var(--primary)">ElasticNet</b>으로 VIF+중요도 축소·진단을 봅니다.</div>',
-                    unsafe_allow_html=True)
+        st.markdown(f'<div class="caption" style="margin-top:8px">→ <b>핵심 변수 선별 효과</b>(비교 2)에서는 '
+                    f'<b>{cpark}</b>의 최고 모델(<b style="color:var(--primary)">{best}</b>)로 '
+                    f'VIF+중요도 축소·진단을 봅니다.</div>', unsafe_allow_html=True)
 
-        # ── 모델별 Learning Curve + Q-Q (사전계산)
-        if MC and MC.get("lc"):
-            lcs, oofs, yv = MC["lc"], MC.get("oof", {}), np.asarray(MC.get("y", []), float)
-            names = [m for m in order if m in lcs]
-
-            st.markdown('<h2 class="h-section" style="margin-top:30px">모델별 Learning Curve</h2>',
+        # ── 모델별 Learning Curve + Q-Q (선택 공원 실시간 계산)
+        y_park = pm[pm["공원명"] == cpark]["총이용객"].values.astype(float)
+        LC = per_park_lc(pm, mt_models, cpark, tuple(allf))
+        names = [m for m in order if m in LC]
+        if names:
+            st.markdown(f'<h2 class="h-section" style="margin-top:30px">모델별 Learning Curve — {cpark}</h2>',
                         unsafe_allow_html=True)
             st.markdown('<div class="caption" style="margin-bottom:10px">훈련 표본 수를 늘려가며 학습·검증 R². '
                         '두 곡선이 수렴하면 데이터 충분, 갭이 크면 과적합.</div>', unsafe_allow_html=True)
@@ -1666,19 +1767,19 @@ elif page == "모델 예측":
                 rowm = names[r:r + 3]
                 cols = st.columns(len(rowm), gap="medium")
                 for nm, col in zip(rowm, cols):
-                    _plot_lc(nm, lcs[nm], col)
+                    _plot_lc(nm, LC[nm], col)
 
-            if oofs and len(yv):
-                st.markdown('<h2 class="h-section" style="margin-top:24px">모델별 Q-Q Plot (OOF 잔차 정규성)</h2>',
+            qn = [m for m in order if m in mf and "oof" in mf[m]]
+            if qn:
+                st.markdown(f'<h2 class="h-section" style="margin-top:24px">모델별 Q-Q Plot — {cpark} (OOF 잔차)</h2>',
                             unsafe_allow_html=True)
                 st.markdown('<div class="caption" style="margin-bottom:10px">교차검증 잔차가 점선(정규분포)에 붙을수록 '
                             '정규성 가정 충족. 양끝이 휘면 두꺼운 꼬리(이상치).</div>', unsafe_allow_html=True)
-                qn = [m for m in names if m in oofs]
                 for r in range(0, len(qn), 3):
                     rowm = qn[r:r + 3]
                     cols = st.columns(len(rowm), gap="medium")
                     for nm, col in zip(rowm, cols):
-                        resid = yv - np.asarray(oofs[nm], float)
+                        resid = y_park - np.asarray(mf[nm]["oof"], float)
                         (osm, osr), _ = probplot(resid, dist="norm")
                         fq = go.Figure()
                         fq.add_trace(go.Scatter(x=osm, y=osr, mode="markers",
@@ -1689,8 +1790,8 @@ elif page == "모델 예측":
                                          xaxis_title="이론 분위수", yaxis_title="잔차 분위수")
                         style_fig(fq)
                         col.plotly_chart(fq, use_container_width=True, config={"displayModeBar": False})
-            st.caption("※ Learning Curve·Q-Q는 동일 모델(업로드 pkl의 하이퍼파라미터)을 VIF 24피처로 재학습해 "
-                       "사전계산(참고용). 성능 수치(위 표)는 fi_models.pkl 기준.")
+        st.caption(f"※ {cpark}만의 데이터(≈{PF['n']}개월)로 업로드 pkl의 하이퍼파라미터를 그대로 재학습한 "
+                   f"5-fold CV·Learning Curve·Q-Q입니다(공원별 실시간).")
     tile_close()
 
 
@@ -1860,10 +1961,11 @@ elif page == "신규 모델 (HSKR)":
 
 elif page == "핵심 변수 선별 효과":
     tile_open("light", anchor="featimp")
-    st.markdown('<h2 class="h-display" style="color:var(--ink)">비교 2 — VIF + Feature Importance</h2>',
+    st.markdown('<h2 class="h-display" style="color:var(--ink)">비교 2 — VIF + Feature Importance (공원별)</h2>',
                 unsafe_allow_html=True)
-    st.markdown('<p class="lead">비교 1의 1등 모델 하나로, <b>VIF 피처</b> vs <b>중요도 상위 피처</b>의 예측 성능을 '
-                '정량 비교하고 Q-Q·잔차·SHAP·Force·LIME·변수 중요도로 해석합니다.</p>', unsafe_allow_html=True)
+    st.markdown('<p class="lead">선택한 <b>개별 공원</b>에서 비교 1의 1등 모델로, <b>VIF 피처</b> vs '
+                '<b>중요도 상위 피처</b>의 예측 성능을 정량 비교하고 Q-Q·잔차·SHAP·Force·LIME·변수 중요도로 '
+                '해석합니다. 모두 그 공원만의 데이터로 실시간 재계산합니다.</p>', unsafe_allow_html=True)
     tile_close()
 
     FB, fi_err = load_fi()
@@ -1878,34 +1980,31 @@ elif page == "핵심 변수 선별 효과":
             import shap
             import matplotlib.pyplot as plt
 
-            mf, mt = FB["metrics_full"], FB["metrics_top"]
-            allf, topf = list(FB["all_features"]), list(FB["top_features"])
-            importance = FB.get("importance", {})
-            std = [m for m in mf if m != "HSKR"]
-            # 사용자 요청: 비교2(VIF vs VIF+중요도)·진단은 결과가 가장 좋았던 ElasticNet으로 고정
-            best = "ElasticNet" if "ElasticNet" in mf else (max(std, key=lambda m: mf[m]["R2"]) if std else list(mf)[0])
+            cand = tuple(c for c in FB["all_features"] if c in pm.columns)
+            mt_models = FB["models_top"]
+            cpark = st.selectbox("공원 (전 11개 공원)", park_list,
+                                 index=(park_list.index(selected_park) if selected_park in park_list else 0),
+                                 key="m2_park")
+            PF = per_park_fi(pm, mt_models, cpark, cand)
+            mf, mt = PF["metrics_full"], PF["metrics_top"]
+            allf, topf = list(PF["all_features"]), list(PF["top_features"])
+            importance = PF["importance"]
+            best = PF["best"]      # 공원별 1등 모델 (트리/선형 자동)
             kind = "linear" if best in ("Ridge", "ElasticNet") else "tree"
-            mvb, mtb = mf[best], mt[best]      # 업로드 pkl 기준 best 모델 full vs top
+            mvb, mtb = mf[best], mt[best]      # 이 공원 best 모델 full(VIF) vs top
             nv, ni = len(allf), len(topf)
 
-            @st.cache_resource(show_spinner=f"{best} 진단 모델 학습·SHAP 계산 중...")
-            def _diag(_pm, best, cols):
+            @st.cache_resource(show_spinner="공원별 진단 모델 학습·SHAP 계산 중...")
+            def _diag(_pm, _models_top, park, best, cols):
                 from sklearn.base import clone
                 from sklearn.preprocessing import StandardScaler
                 from sklearn.model_selection import KFold, cross_val_predict
-                from sklearn.linear_model import Ridge, ElasticNet
-                from sklearn.ensemble import (GradientBoostingRegressor, RandomForestRegressor,
-                                              ExtraTreesRegressor)
-                FAC = {"Ridge": Ridge(alpha=10.0),
-                       "ElasticNet": ElasticNet(alpha=0.5, l1_ratio=0.7, max_iter=5000),
-                       "GradientBoosting": GradientBoostingRegressor(random_state=42),
-                       "RandomForest": RandomForestRegressor(n_estimators=150, random_state=42, n_jobs=-1),
-                       "ExtraTrees": ExtraTreesRegressor(n_estimators=150, random_state=42, n_jobs=-1)}
-                cols = [c for c in cols if c in _pm.columns]
-                X = _pm[cols].astype(float).fillna(0).values
-                y = _pm["총이용객"].values.astype(float)
+                sub = _pm[_pm["공원명"] == park]
+                cols = [c for c in cols if c in sub.columns]
+                X = sub[cols].astype(float).fillna(0).values
+                y = sub["총이용객"].values.astype(float)
                 Z = StandardScaler().fit_transform(X)
-                est = FAC.get(best, Ridge(alpha=10.0))
+                est = _models_top.get(best)
                 mdl = clone(est).fit(Z, y)
                 oof = cross_val_predict(clone(est), Z, y, cv=KFold(5, shuffle=True, random_state=42))
                 if best in ("Ridge", "ElasticNet"):
@@ -1914,21 +2013,23 @@ elif page == "핵심 변수 선별 효과":
                     ex = shap.TreeExplainer(mdl)
                 sv = np.asarray(ex.shap_values(Z))
                 base_val = float(np.ravel(ex.expected_value)[0])
-                return dict(Z=Z, y=y, oof=oof, mdl=mdl, sv=sv, base_val=base_val,
-                            cols=[c for c in cols if c in _pm.columns])
+                return dict(Z=Z, y=y, oof=oof, mdl=mdl, sv=sv, base_val=base_val, cols=cols)
 
-            D = _diag(pm, best, tuple(topf))    # VIF+중요도 (상위 top-K)
-            Dv = _diag(pm, best, tuple(allf))   # VIF (전체) — 전후 비교용
+            D = _diag(pm, mt_models, cpark, best, tuple(topf))    # VIF+중요도 (상위 top-K)
+            Dv = _diag(pm, mt_models, cpark, best, tuple(allf))   # VIF (전체) — 전후 비교용
             Z, y, oof, mdl, sv, base_val = D["Z"], D["y"], D["oof"], D["mdl"], D["sv"], D["base_val"]
             diag_cols = D["cols"]
 
-            # ── 비교2: VIF vs VIF+중요도 (업로드 pkl 수치) — 전 모델 + best 강조
-            st.markdown('<h2 class="h-section">실험 결과 — VIF vs VIF+중요도 (업로드 분석 결과)</h2>',
+            # ── 비교2: VIF vs VIF+중요도 (공원별 실시간) — best 모델
+            st.markdown(f'<h2 class="h-section">실험 결과 — VIF vs VIF+중요도 · {cpark} (공원별 실시간)</h2>',
                         unsafe_allow_html=True)
-            st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6">업로드한 <b>fi_models.pkl</b> '
-                        f'기준. VIF 적용 <b>{nv}개</b> 피처 vs 중요도 상위 <b>{ni}개</b>로 줄였을 때의 성능. '
-                        f'표준 ML 1등은 <b style="color:var(--primary)">{best}</b>(HSKR은 신규 모델, 별도). '
-                        f'변수를 {nv}→{ni}개로 줄여도 성능이 유지되는지 봅니다.</div>', unsafe_allow_html=True)
+            _redu = (f'변수를 {nv}→{ni}개로 줄여도 성능이 유지되는지 봅니다.' if ni < nv
+                     else f'이 공원은 VIF 후 변동 피처가 {nv}개뿐이라 추가 축소 없이 동일합니다.')
+            st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6"><b>{cpark}</b>'
+                        f'(≈{PF["n"]}개월) 데이터로 실시간 재학습. VIF 적용 <b>{nv}개</b> 피처 vs 중요도 상위 '
+                        f'<b>{ni}개</b>로 줄였을 때의 성능. 이 공원의 1등 모델은 '
+                        f'<b style="color:var(--primary)">{best}</b>(HSKR은 신규 모델, 별도). {_redu}</div>',
+                        unsafe_allow_html=True)
             k1, k2, k3 = st.columns(3, gap="medium")
             k1.markdown(metric_card(f"{nv}→{ni}", "피처 수 (VIF→VIF+중요도)"), unsafe_allow_html=True)
             k2.markdown(metric_card(f"{mtb['R2']:.3f}", f"{best} · VIF+중요도 R²",
@@ -1953,9 +2054,9 @@ elif page == "핵심 변수 선별 효과":
             # ── 변수 중요도 (업로드 importance, VIF 24개) — 검색량 빨강 + 선택 top 강조
             st.markdown('<h2 class="h-section" style="margin-top:24px">변수 중요도 — 상위 '
                         f'{ni}개 선택</h2>', unsafe_allow_html=True)
-            st.markdown('<div class="caption" style="margin-bottom:8px"><b style="color:#E8505B">빨강 = 검색량</b> · '
+            st.markdown(f'<div class="caption" style="margin-bottom:8px"><b style="color:#E8505B">빨강 = 검색량</b> · '
                         f'<b style="color:var(--primary)">진한 파랑 = 선택된 상위 {ni}개</b> · 연회색 = 미선택 '
-                        '(업로드 fi_models.pkl importance)</div>', unsafe_allow_html=True)
+                        f'({cpark} {best} 모델 중요도, 실시간)</div>', unsafe_allow_html=True)
             if importance:
                 imp_df = pd.DataFrame({"변수": list(importance.keys()),
                                        "중요도": list(importance.values())}).sort_values("중요도")
@@ -2033,14 +2134,15 @@ elif page == "핵심 변수 선별 효과":
             # ── 개별 예측: Force + LIME
             st.markdown('<h2 class="h-section" style="margin-top:26px">개별 예측 — Force plot · LIME</h2>',
                         unsafe_allow_html=True)
-            ym = pd.to_datetime(pm["연월"].values)
-            labels = [f"{i:>3} · {pm.iloc[i]['공원명']} · {pd.Timestamp(ym[i]):%Y-%m}" for i in range(len(pm))]
-            default_i = next((i for i in range(len(pm)) if pm.iloc[i]["공원명"] == selected_park), 0)
-            idx = st.selectbox("설명할 예측 (기본 = 선택 공원)", range(len(pm)), index=default_i,
+            psub = pm[pm["공원명"] == cpark].reset_index(drop=True)
+            ymp = pd.to_datetime(psub["연월"].values)
+            n_idx = min(len(psub), sv.shape[0])
+            labels = [f"{i:>3} · {cpark} · {pd.Timestamp(ymp[i]):%Y-%m}" for i in range(n_idx)]
+            idx = st.selectbox(f"설명할 예측 ({cpark} 월별, 기본 = 최근월)", range(n_idx), index=n_idx - 1,
                                format_func=lambda i: labels[i])
             pred_i = base_val + sv[idx, :].sum()
             f1, f2 = st.columns(2, gap="medium")
-            f1.markdown(metric_card(f"{pred_i/1e4:,.1f}만", f"예측 — {pm.iloc[idx]['공원명']}"), unsafe_allow_html=True)
+            f1.markdown(metric_card(f"{pred_i/1e4:,.1f}만", f"예측 — {cpark}"), unsafe_allow_html=True)
             f2.markdown(metric_card(f"{base_val/1e4:,.1f}만", "기준값(평균 예측)"), unsafe_allow_html=True)
             st.markdown('<div class="caption" style="margin:6px 0 4px 0">기준값에서 '
                         '<b style="color:#ff0d57">빨강(↑)</b> · <b style="color:#1e88e5">파랑(↓)</b> '
@@ -2056,7 +2158,7 @@ elif page == "핵심 변수 선별 효과":
             fl = go.Figure(go.Bar(x=lime_df["국소기여"], y=lime_df["변수"], orientation="h", marker_color=colL,
                                   text=[f"{v/1e3:+.1f}K" for v in lime_df["국소기여"]], textposition="outside"))
             fl.add_vline(x=0, line=dict(color=TOK["ink"], dash="dot"))
-            fl.update_layout(title=f"LIME 국소 기여 — {pm.iloc[idx]['공원명']} {pd.Timestamp(ym[idx]):%Y-%m}",
+            fl.update_layout(title=f"LIME 국소 기여 — {cpark} {pd.Timestamp(ymp[idx]):%Y-%m}",
                              height=380, xaxis_title="국소 기여 (파랑 ↑ / 빨강 ↓)", margin=dict(l=10, r=70))
             style_fig(fl)
             st.plotly_chart(fl, use_container_width=True, config={"displayModeBar": False})
