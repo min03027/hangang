@@ -1650,7 +1650,7 @@ elif page == "모델 예측":
         st.download_button("⬇️ 모델 성능표 CSV", cmp_df.to_csv(index=False).encode("utf-8-sig"),
                            "model_compare.csv", "text/csv")
         st.markdown('<div class="caption" style="margin-top:8px">→ <b>핵심 변수 선별 효과</b>(비교 2)에서는 '
-                    '해석이 명확한 <b style="color:var(--primary)">Ridge</b>로 VIF+중요도 축소·진단을 봅니다.</div>',
+                    '결과가 가장 좋았던 <b style="color:var(--primary)">ElasticNet</b>으로 VIF+중요도 축소·진단을 봅니다.</div>',
                     unsafe_allow_html=True)
 
         # ── 모델별 Learning Curve + Q-Q (사전계산)
@@ -1882,8 +1882,8 @@ elif page == "핵심 변수 선별 효과":
             allf, topf = list(FB["all_features"]), list(FB["top_features"])
             importance = FB.get("importance", {})
             std = [m for m in mf if m != "HSKR"]
-            # 사용자 요청: 비교2(VIF vs VIF+중요도)·진단은 해석이 명확한 Ridge로 고정
-            best = "Ridge" if "Ridge" in mf else (max(std, key=lambda m: mf[m]["R2"]) if std else list(mf)[0])
+            # 사용자 요청: 비교2(VIF vs VIF+중요도)·진단은 결과가 가장 좋았던 ElasticNet으로 고정
+            best = "ElasticNet" if "ElasticNet" in mf else (max(std, key=lambda m: mf[m]["R2"]) if std else list(mf)[0])
             kind = "linear" if best in ("Ridge", "ElasticNet") else "tree"
             mvb, mtb = mf[best], mt[best]      # 업로드 pkl 기준 best 모델 full vs top
             nv, ni = len(allf), len(topf)
