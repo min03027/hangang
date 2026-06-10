@@ -844,6 +844,7 @@ def hskr_vs_ml(_B, _pm, _models_top, _fp_perpark, park):
     hskr_r2 = float(r2_score(yte, np.asarray(pp["hskr_pred_test"], float)))
     sub = _pm[_pm["공원명"] == park].copy()
     sub["ym"] = pd.to_datetime(sub["연월"]).dt.strftime("%Y-%m")
+    sub = sub.drop_duplicates("ym")          # 같은 연월 중복 방지(reindex 충돌 회피)
     feats = [c for c in _fp_perpark["per_park"].get(park, {}).get("all_features", []) if c in sub.columns]
     tr = sub[~sub["ym"].isin(test_ym)]
     te = sub[sub["ym"].isin(test_ym)].set_index("ym").reindex(test_ym)
