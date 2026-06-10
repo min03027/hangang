@@ -914,22 +914,20 @@ def vif_pooled_compare(_pm, thresh=10.0):
               "RandomForest": RandomForestRegressor(n_estimators=120, random_state=42, n_jobs=-1)}
     res = {}
     for nm, mdl in models.items():
-        rb, eb, _ = _cv(cand, clone(mdl))
+        rb, eb, oof_b = _cv(cand, clone(mdl))
         ra, ea, oof_a = _cv(vf, clone(mdl))
-        res[nm] = {"before": {"R2": rb, "RMSE": eb}, "after": {"R2": ra, "RMSE": ea}, "oof": oof_a}
+        res[nm] = {"before": {"R2": rb, "RMSE": eb, "oof": oof_b},
+                   "after": {"R2": ra, "RMSE": ea, "oof": oof_a}}
 
-    # SHAP (RandomForest · 시설·검색량 피처만 = 공원 효과 제외) — VIF 전/후
+    # 변수 중요도(mean|SHAP|, RandomForest · 시설·검색량 기준) — VIF 후보 전체
     import shap
-
-    def _shap(cols):
-        Z = StandardScaler().fit_transform(df[cols].astype(float).values)
-        m = RandomForestRegressor(n_estimators=120, random_state=42, n_jobs=-1).fit(Z, y)
-        ex = shap.TreeExplainer(m)
-        sv = np.asarray(ex.shap_values(Z), float)
-        return {"sv": sv, "Z": Z, "cols": list(cols), "base": float(np.ravel(ex.expected_value)[0])}
+    Zc = StandardScaler().fit_transform(df[cand].astype(float).values)
+    mc = RandomForestRegressor(n_estimators=120, random_state=42, n_jobs=-1).fit(Zc, y)
+    msh = np.abs(np.asarray(shap.TreeExplainer(mc).shap_values(Zc), float)).mean(0)
+    imp = {c: float(v) for c, v in zip(cand, msh)}
 
     return {"n_before": len(cand), "n_after": len(vf), "removed": removed, "results": res,
-            "y": y, "ym": ym, "shap_before": _shap(cand), "shap_after": _shap(vf)}
+            "y": y, "ym": ym, "importance": imp}
 
 
 def load_learning_curves():
@@ -1948,65 +1946,61 @@ elif page == "t-test & VIF":
                    "VIF는 '성능 향상'보다 '선형모델 안정성·해석력' 목적. 제거 변수: "
                    + ((", ".join(VC["removed"][:12]) + (" …" if len(VC["removed"]) > 12 else "")) or "없음"))
 
-        # ── SHAP: VIF 적용 전 vs 후 (RandomForest · 시설·검색량 피처)
-        import shap as _shaplib
-        import matplotlib.pyplot as plt
-        st.markdown('<h2 class="h-section" style="margin-top:26px">SHAP — VIF 적용 전 vs 후 (RandomForest)</h2>',
+        # ── 변수 중요도(mean|SHAP|) + VIF가 제거한 변수 표시
+        st.markdown('<h2 class="h-section" style="margin-top:26px">변수 중요도와 VIF 제거 변수</h2>',
                     unsafe_allow_html=True)
-        st.markdown('<div class="caption" style="margin-bottom:6px">시설·검색량 피처 기준(공원 효과 제외). '
-                    '왼쪽 = VIF 전, 오른쪽 = VIF 후 — 공선성 변수를 빼면 중요도가 더 또렷해집니다.</div>',
-                    unsafe_allow_html=True)
-        sb, sa = VC["shap_before"], VC["shap_after"]
-        sc1, sc2 = st.columns(2, gap="medium")
-        with sc1:
-            figb = plt.figure(figsize=(7, 5))
-            _shaplib.summary_plot(sb["sv"], features=sb["Z"], feature_names=sb["cols"],
-                                  max_display=12, show=False)
-            plt.title(f"VIF 전 ({nb}개)", fontsize=12); plt.tight_layout()
-            st.pyplot(figb, clear_figure=True)
-        with sc2:
-            figa = plt.figure(figsize=(7, 5))
-            _shaplib.summary_plot(sa["sv"], features=sa["Z"], feature_names=sa["cols"],
-                                  max_display=12, show=False)
-            plt.title(f"VIF 후 ({na}개)", fontsize=12); plt.tight_layout()
-            st.pyplot(figa, clear_figure=True)
+        st.markdown('<div class="caption" style="margin-bottom:6px">RandomForest mean|SHAP| (시설·검색량 기준, '
+                    '공원 효과 제외). <b style="color:#E8505B">빨강 = VIF가 제거한 변수</b> · '
+                    '파랑 = 잔류. VIF는 공선성 변수를 빼는데, 음악분수·천상계단처럼 중요해도 '
+                    '다른 변수와 겹치면 제거될 수 있습니다.</div>', unsafe_allow_html=True)
+        imp = VC["importance"]; rem = set(VC["removed"])
+        idf = pd.DataFrame({"변수": list(imp.keys()), "중요도": list(imp.values())}).sort_values("중요도").tail(20)
+        cols_c = ["#E8505B" if v in rem else TOK["primary"] for v in idf["변수"]]
+        fimp = go.Figure(go.Bar(x=idf["중요도"], y=idf["변수"], orientation="h", marker_color=cols_c,
+                                text=[f"{v/1e3:.0f}K" for v in idf["중요도"]], textposition="outside"))
+        fimp.update_layout(title="변수 중요도 mean|SHAP| (빨강=VIF 제거, 상위 20)",
+                           height=max(420, 22 * len(idf)), xaxis_title="mean|SHAP|", margin=dict(l=10, r=70))
+        style_fig(fimp)
+        st.plotly_chart(fimp, use_container_width=True, config={"displayModeBar": False})
+        _imp_rem = sum(imp[c] for c in rem if c in imp)
+        st.caption(f"※ VIF가 제거한 {len(rem)}개 변수의 중요도 합은 전체의 "
+                   f"{_imp_rem/sum(imp.values())*100:.0f}% (음악분수·천상계단 등 일부는 상위권). "
+                   f"트리 R²가 소폭 내려간 이유 — 중요 변수도 공선성으로 빠졌기 때문.")
 
-        # ── Force plot (VIF 후, 개별 예측 1건)
-        st.markdown('<h2 class="h-section" style="margin-top:20px">Force plot — VIF 후 (개별 예측)</h2>',
+        # ── 모델별 — 시계열·잔차 (VIF 전 vs 후)
+        st.markdown('<h2 class="h-section" style="margin-top:24px">모델별 — 시계열·잔차 (VIF 전 vs 후)</h2>',
                     unsafe_allow_html=True)
-        ridx = int(np.argmax(np.abs(sa["sv"]).sum(1)))
-        _shaplib.force_plot(sa["base"], sa["sv"][ridx, :], features=np.round(sa["Z"][ridx, :], 2),
-                            feature_names=sa["cols"], matplotlib=True, show=False, figsize=(20, 3), text_rotation=12)
-        st.pyplot(plt.gcf(), clear_figure=True)
-        st.caption("※ 기준값에서 각 변수 기여(빨강↑/파랑↓)를 거쳐 최종 예측에 도달. 기여 합이 가장 큰 표본 1건.")
-
-        # ── 모델별 최종(VIF 후) — 시계열(월 집계) + 잔차
-        st.markdown('<h2 class="h-section" style="margin-top:22px">모델별 최종(VIF 후) — 시계열·잔차</h2>',
-                    unsafe_allow_html=True)
-        st.markdown('<div class="caption" style="margin-bottom:6px">전 공원을 월별 합산한 실제 vs 예측(5-fold OOF), '
-                    '그리고 잔차(실제−예측) vs 예측.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin-bottom:6px">전 공원을 월별 합산한 실제 vs 예측(5-fold OOF). '
+                    '<b style="color:#8e8e93">회색 = VIF 전</b> · <b style="color:var(--primary)">파랑 = VIF 후</b>. '
+                    '잔차 = 실제−예측 vs 예측.</div>', unsafe_allow_html=True)
         yv = np.asarray(VC["y"], float); ymv = np.asarray(VC["ym"])
         for nm in VC["results"]:
-            oof = np.asarray(VC["results"][nm]["oof"], float)
-            agg = (pd.DataFrame({"ym": ymv, "actual": yv, "pred": oof})
+            ob = np.asarray(VC["results"][nm]["before"]["oof"], float)
+            oa = np.asarray(VC["results"][nm]["after"]["oof"], float)
+            agg = (pd.DataFrame({"ym": ymv, "실제": yv, "전": ob, "후": oa})
                    .groupby("ym", as_index=False).sum().sort_values("ym"))
             cta, ctb = st.columns(2, gap="medium")
             with cta:
                 ft = go.Figure()
-                ft.add_trace(go.Scatter(x=agg["ym"], y=agg["actual"], name="실제", mode="lines+markers",
+                ft.add_trace(go.Scatter(x=agg["ym"], y=agg["실제"], name="실제", mode="lines+markers",
                                         line=dict(color=TOK["ink"], width=2)))
-                ft.add_trace(go.Scatter(x=agg["ym"], y=agg["pred"], name="예측", mode="lines+markers",
-                                        line=dict(color=TOK["primary"], width=2, dash="dot")))
+                ft.add_trace(go.Scatter(x=agg["ym"], y=agg["전"], name="VIF 전", mode="lines",
+                                        line=dict(color="#8e8e93", width=2, dash="dot")))
+                ft.add_trace(go.Scatter(x=agg["ym"], y=agg["후"], name="VIF 후", mode="lines+markers",
+                                        line=dict(color=TOK["primary"], width=2)))
                 ft.update_layout(title=f"{nm} — 월별 실제 vs 예측", height=300, hovermode="x unified",
-                                 legend=dict(orientation="h", y=1.18))
+                                 legend=dict(orientation="h", y=1.2))
                 style_fig(ft)
                 st.plotly_chart(ft, use_container_width=True, config={"displayModeBar": False})
             with ctb:
-                resid = yv - oof
-                fr = go.Figure(go.Scatter(x=oof, y=resid, mode="markers",
-                                          marker=dict(color=TOK["primary"], size=4, opacity=0.5)))
+                fr = go.Figure()
+                fr.add_trace(go.Scatter(x=oa, y=yv - oa, name="VIF 후", mode="markers",
+                                        marker=dict(color=TOK["primary"], size=4, opacity=0.5)))
+                fr.add_trace(go.Scatter(x=ob, y=yv - ob, name="VIF 전", mode="markers",
+                                        marker=dict(color="#8e8e93", size=4, opacity=0.35)))
                 fr.add_hline(y=0, line=dict(color=TOK["ink"], dash="dot"))
-                fr.update_layout(title=f"{nm} — 잔차 vs 예측", height=300, xaxis_title="예측", yaxis_title="잔차")
+                fr.update_layout(title=f"{nm} — 잔차 vs 예측", height=300, xaxis_title="예측",
+                                 yaxis_title="잔차", legend=dict(orientation="h", y=1.2))
                 style_fig(fr)
                 st.plotly_chart(fr, use_container_width=True, config={"displayModeBar": False})
     except Exception as e:
