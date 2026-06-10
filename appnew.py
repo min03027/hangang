@@ -868,6 +868,57 @@ def hskr_vs_ml(_B, _pm, _models_top, _fp_perpark, park):
     return {"ml_name": best[0], "ml_r2": best[1], "ml_pred": best[2], "hskr_r2": hskr_r2}
 
 
+@st.cache_data(show_spinner="VIF 전후 전체모델 성능 계산 중...")
+def vif_pooled_compare(_pm, thresh=10.0):
+    """전체(pooled, 공원-월 814) 모델에서 VIF 적용 전 vs 후 성능 비교.
+    후보 = 시설+검색량 (이용객 구성요소 제외=누수 방지). 공원명 원-핫 포함 모델."""
+    from sklearn.base import clone
+    from sklearn.preprocessing import StandardScaler, OneHotEncoder
+    from sklearn.compose import ColumnTransformer
+    from sklearn.pipeline import Pipeline
+    from sklearn.linear_model import Ridge, ElasticNet
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.model_selection import KFold, cross_val_predict
+    from sklearn.metrics import r2_score, mean_squared_error
+    from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+    excl = {"공원명", "연월", "월", "계절", "총이용객", "월sin", "월cos"}
+    df = _pm.copy()
+    cand = [c for c in df.columns if c not in excl and "일반이용자" not in c
+            and pd.api.types.is_numeric_dtype(df[c]) and df[c].astype(float).std() > 0]
+    for c in cand:
+        df[c] = df[c].fillna(0.0)
+    # VIF 반복 제거
+    vf = list(cand)
+    removed = []
+    while len(vf) > 2:
+        Z = StandardScaler().fit_transform(df[vf].astype(float).values)
+        vifs = [variance_inflation_factor(Z, i) for i in range(Z.shape[1])]
+        j = int(np.argmax(vifs))
+        if vifs[j] > thresh:
+            removed.append(vf.pop(j))
+        else:
+            break
+    y = df["총이용객"].values.astype(float)
+    kf = KFold(5, shuffle=True, random_state=42)
+
+    def _cv(cols, model):
+        pre = ColumnTransformer([("num", "passthrough", cols),
+                                 ("park", OneHotEncoder(handle_unknown="ignore"), ["공원명"])])
+        pipe = Pipeline([("pre", pre), ("sc", StandardScaler(with_mean=False)), ("m", model)])
+        oof = cross_val_predict(pipe, df[cols + ["공원명"]], y, cv=kf)
+        return float(r2_score(y, oof)), float(mean_squared_error(y, oof) ** 0.5)
+
+    models = {"Ridge": Ridge(alpha=10.0), "ElasticNet": ElasticNet(alpha=1.0, max_iter=10000),
+              "RandomForest": RandomForestRegressor(n_estimators=150, random_state=42, n_jobs=-1)}
+    res = {}
+    for nm, mdl in models.items():
+        rb, eb = _cv(cand, clone(mdl))
+        ra, ea = _cv(vf, clone(mdl))
+        res[nm] = {"before": {"R2": rb, "RMSE": eb}, "after": {"R2": ra, "RMSE": ea}}
+    return {"n_before": len(cand), "n_after": len(vf), "removed": removed, "results": res}
+
+
 def load_learning_curves():
     """사전 계산된 learning curve 결과 로드 (인앱 학습 없이 그리기 위함).
 
@@ -1851,6 +1902,41 @@ elif page == "t-test & VIF":
             st.plotly_chart(fig_v, use_container_width=True, config={"displayModeBar": False})
     except Exception as e:
         st.markdown(f'<div class="caption">분석을 실행할 수 없습니다 — {e}</div>', unsafe_allow_html=True)
+    tile_close()
+
+    # ── VIF 적용 전후 — 전체(pooled) 모델 성능 비교
+    tile_open("light")
+    st.markdown('<h2 class="h-section">VIF 적용 전후 — 전체 모델 성능 비교</h2>', unsafe_allow_html=True)
+    scope_note(True)
+    try:
+        VC = vif_pooled_compare(pm)
+        nb, na = VC["n_before"], VC["n_after"]
+        st.markdown(f'<div class="caption" style="margin-bottom:8px">전 공원 <b>814건</b>(공원-월)·공원명 원-핫 포함. '
+                    f'후보 <b>{nb}개</b> 피처에서 VIF&gt;10 공선성 변수를 반복 제거 → <b>{na}개</b>'
+                    f'(제거 {nb-na}개). 같은 모델로 VIF 전/후 5-fold CV 성능 비교.</div>', unsafe_allow_html=True)
+        names = list(VC["results"].keys())
+        vdf = pd.DataFrame([{"모델": n, f"VIF 전 R²({nb})": round(VC["results"][n]["before"]["R2"], 3),
+                             f"VIF 후 R²({na})": round(VC["results"][n]["after"]["R2"], 3),
+                             "ΔR²": round(VC["results"][n]["after"]["R2"] - VC["results"][n]["before"]["R2"], 3)}
+                            for n in names])
+        ca, cb = st.columns([3, 4], gap="medium")
+        ca.dataframe(vdf, use_container_width=True, hide_index=True)
+        with cb:
+            fvc = go.Figure()
+            fvc.add_trace(go.Bar(name=f"VIF 전({nb})", x=names,
+                                 y=[VC["results"][n]["before"]["R2"] for n in names], marker_color=TOK["ink_48"]))
+            fvc.add_trace(go.Bar(name=f"VIF 후({na})", x=names,
+                                 y=[VC["results"][n]["after"]["R2"] for n in names], marker_color=TOK["primary"]))
+            fvc.update_layout(title="VIF 전후 R² (전체 모델)", barmode="group", height=320, yaxis_title="R²",
+                              legend=dict(orientation="h", y=1.14))
+            style_fig(fvc)
+            st.plotly_chart(fvc, use_container_width=True, config={"displayModeBar": False})
+        st.caption("※ 선형(Ridge)은 공선성 제거로 R²↑·계수 안정 / 트리(RandomForest)는 정보 손실로 소폭↓ — "
+                   "VIF는 '성능 향상'보다 '선형모델 안정성·해석력' 목적. 제거 변수: "
+                   + ((", ".join(VC["removed"][:12]) + (" …" if len(VC["removed"]) > 12 else "")) or "없음"))
+    except Exception as e:
+        st.markdown(f'<div class="caption">VIF 전후 비교 실패 — {type(e).__name__}: {e}</div>',
+                    unsafe_allow_html=True)
     tile_close()
 
 
