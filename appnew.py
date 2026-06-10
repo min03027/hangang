@@ -1050,6 +1050,38 @@ def metric_card(num: str, label: str, delta: str | None = None, *, dark: bool = 
 
 
 # ─────────────────────────────────────────────────────────────
+# 네비게이션: 4그룹(탐색·모델·검증·활용) + 영어 라벨 한글 보조
+# ─────────────────────────────────────────────────────────────
+NAV_GROUPS = [
+    ("탐색",            ["개요", "EDA", "t-test & VIF"]),
+    ("모델 (공원별)",    ["모델 예측", "신규 모델 (HSKR)", "핵심 변수 선별 효과"]),
+    ("검증 (전체 공원)", ["Nested CV", "Bootstrap CI", "Conformal"]),
+    ("활용",            ["예측 시뮬레이터"]),
+]
+NAV_KO = {
+    "Conformal": "Conformal (예측 구간)",
+    "Bootstrap CI": "Bootstrap CI (성능 신뢰구간)",
+    "Nested CV": "Nested CV (중첩 교차검증)",
+}
+
+
+def scope_note(pooled: bool, park: str = None) -> None:
+    """페이지 상단 한 줄 — pooled(전체 공원) vs per-park(공원별) 적용 범위 표시."""
+    if pooled:
+        st.markdown(
+            '<div style="display:inline-block;background:rgba(0,102,204,0.08);'
+            'border:1px solid rgba(0,102,204,0.28);border-radius:999px;padding:5px 14px;'
+            'font-size:13px;color:var(--ink);margin:0 0 14px 0">🌐 <b>전체 공원</b> 기준 · '
+            'pooled 815건 — 사이드바 <b>공원 선택</b>과 무관합니다</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(
+            f'<div style="display:inline-block;background:rgba(232,80,91,0.08);'
+            f'border:1px solid rgba(232,80,91,0.30);border-radius:999px;padding:5px 14px;'
+            f'font-size:13px;color:var(--ink);margin:0 0 14px 0">📍 <b>{park}</b> 기준 · '
+            f'공원별(per-park) 분석 — 공원을 바꾸면 결과가 바뀝니다</div>', unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────
 # Sidebar
 # ─────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -1086,12 +1118,23 @@ with st.sidebar:
         ("모델 예측",       "model"),
         ("신규 모델 (HSKR)", "spark"),
         ("핵심 변수 선별 효과", "model"),
-        ("예측 시뮬레이터",  "boot"),
-        ("Conformal",      "interval"),
-        ("Bootstrap CI",   "boot"),
         ("Nested CV",      "cv"),
+        ("Bootstrap CI",   "boot"),
+        ("Conformal",      "interval"),
+        ("예측 시뮬레이터",  "boot"),
     ]
-    page = st.radio("분석", [p[0] for p in PAGES], key="page", label_visibility="visible")
+    if "page" not in st.session_state:
+        st.session_state["page"] = "개요"
+    page = st.session_state["page"]
+    st.markdown('<div class="caption" style="margin-bottom:2px">분석</div>', unsafe_allow_html=True)
+    for _gname, _items in NAV_GROUPS:
+        st.markdown(f'<div style="font-size:11px;font-weight:700;letter-spacing:.05em;'
+                    f'color:var(--ink-48);margin:13px 0 5px 2px">{_gname}</div>', unsafe_allow_html=True)
+        for _it in _items:
+            if st.button(NAV_KO.get(_it, _it), key=f"navbtn_{_it}", use_container_width=True,
+                         type=("primary" if _it == page else "secondary")):
+                st.session_state["page"] = _it
+                st.rerun()
 
     st.markdown('<div style="height:24px"></div>', unsafe_allow_html=True)
     st.markdown(f"""
@@ -1213,7 +1256,7 @@ with hcol[2]:
                     f'{icon("chart", 18, TOK["ink_48"], TOK["primary"])}'
                     f'<span class="caption" style="margin:0">현재 분석</span></div>', unsafe_allow_html=True)
         st.selectbox("분석", [p[0] for p in PAGES], key="hdr_page", on_change=_hdr_pick_page,
-                     label_visibility="collapsed")
+                     format_func=lambda x: NAV_KO.get(x, x), label_visibility="collapsed")
         st.markdown(f'<div class="caption" style="margin-top:2px">{PAGE_DESC.get(page, "")}</div>',
                     unsafe_allow_html=True)
 
@@ -1268,15 +1311,15 @@ if page == "개요":
     st.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
 
     FEATURES = [
-        ("EDA",            "chart",    "월별 추이 · 계절성 · 변수 분포"),
-        ("t-test & VIF",   "scatter",  "유의 피처 선별 · 공선성 제거"),
-        ("모델 예측",       "model",    "비교1: VIF 적용 모델 비교 + 학습곡선"),
-        ("신규 모델 (HSKR)", "spark",    "내가 만든 HSKR vs 기존 · 11공원"),
-        ("핵심 변수 선별 효과", "model",  "비교2: VIF+중요도(1등 모델) + 진단"),
-        ("예측 시뮬레이터",  "boot",     "입력 조정 → 실시간 예측"),
-        ("Conformal",      "interval", "분포가정 없는 예측구간"),
-        ("Bootstrap CI",   "boot",     "성능지표 신뢰구간"),
-        ("Nested CV",      "cv",       "과적합 없는 일반화 추정"),
+        ("EDA",            "chart",    "탐색 · 월별 추이·계절성·변수 분포"),
+        ("t-test & VIF",   "scatter",  "탐색 · 유의 피처 선별·공선성 제거"),
+        ("모델 예측",       "model",    "모델(공원별) · 비교1: VIF 모델 비교"),
+        ("신규 모델 (HSKR)", "spark",    "모델(공원별) · HSKR vs 기존"),
+        ("핵심 변수 선별 효과", "model",  "모델(공원별) · 비교2: VIF+중요도 진단"),
+        ("Nested CV",      "cv",       "검증(전체 공원) · 중첩 교차검증"),
+        ("Bootstrap CI",   "boot",     "검증(전체 공원) · 성능 신뢰구간"),
+        ("Conformal",      "interval", "검증(전체 공원) · 예측 구간"),
+        ("예측 시뮬레이터",  "boot",     "활용 · 입력 조정 → 실시간 예측"),
     ]
     for r in range(0, len(FEATURES), 3):
         cols = st.columns(3, gap="medium")
@@ -1286,7 +1329,7 @@ if page == "개요":
                 with st.container(key=f"navcard_{i}"):
                     st.markdown(
                         f'<div style="margin-bottom:12px">{icon(ic, 26, TOK["ink"], TOK["primary"])}</div>'
-                        f'<div class="body-strong" style="color:var(--ink)">{title}</div>'
+                        f'<div class="body-strong" style="color:var(--ink)">{NAV_KO.get(title, title)}</div>'
                         f'<div class="caption" style="color:var(--ink-48); margin-top:6px; '
                         f'line-height:1.5; min-height:38px">{desc}</div>',
                         unsafe_allow_html=True)
@@ -1350,6 +1393,7 @@ if page == "개요":
 elif page == "EDA":
     tile_open("light", anchor="eda")
     st.markdown('<h2 class="h-section">탐색적 데이터 분석</h2>', unsafe_allow_html=True)
+    scope_note(False, selected_park)
 
     SEASON_C = {"봄": "#34c759", "여름": "#0a84ff", "가을": "#ff9f0a", "겨울": "#5e5ce6"}
     SEASON_ORDER = ["봄", "여름", "가을", "겨울"]
@@ -1769,6 +1813,7 @@ elif page == "모델 예측":
     cpark = st.selectbox("공원 (전 11개 공원)", park_list,
                          index=(park_list.index(selected_park) if selected_park in park_list else 0),
                          key="m1_park")
+    scope_note(False, cpark)
     st.markdown(f'<h2 class="h-section">VIF 적용 피처로 학습한 모델 성능 — '
                 f'<span style="color:var(--primary)">{cpark}</span></h2>', unsafe_allow_html=True)
     pack = get_park_pack(cpark)
@@ -1940,6 +1985,7 @@ elif page == "신규 모델 (HSKR)":
         # 공원 선택 (상세)
         d_idx = parks.index(selected_park) if selected_park in parks else (parks.index(core[0]) if core else 0)
         cpark = st.selectbox("공원 (전 11개 공원)", parks, index=d_idx)
+        scope_note(False, cpark)
         pp = B["per_park"][cpark]
         met = pp["metrics"]
         red = _red(cpark)
@@ -2048,6 +2094,7 @@ elif page == "핵심 변수 선별 효과":
     cpark = st.selectbox("공원 (전 11개 공원)", park_list,
                          index=(park_list.index(selected_park) if selected_park in park_list else 0),
                          key="m2_park")
+    scope_note(False, cpark)
     pack = get_park_pack(cpark)
     if pack is None:
         st.markdown('<div class="card"><div class="body-strong">분석 결과를 불러올 수 없습니다</div>'
@@ -2249,6 +2296,7 @@ elif page == "예측 시뮬레이터":
     <p class="lead">공원과 시설·검색량을 조정하면 RandomForest가 월 이용객을 다시 추정합니다.</p>
     """, unsafe_allow_html=True)
     tile_close()
+    scope_note(True)
 
     tile_open("light")
     bundle = get_bundle(pm, feature_cols)
@@ -2316,6 +2364,7 @@ elif page == "Conformal":
     <p class="lead">Split Conformal로 보장된 커버리지를 — 단 하나의 캘리브레이션 단계로.</p>
     """, unsafe_allow_html=True)
     tile_close()
+    scope_note(True)
 
     tile_open("light")
     st.markdown('<h2 class="h-section">Conformal Prediction</h2>', unsafe_allow_html=True)
@@ -2366,6 +2415,7 @@ elif page == "Conformal":
 elif page == "Bootstrap CI":
     tile_open("parchment", anchor="bootstrap")
     st.markdown('<h2 class="h-section">Bootstrap 95% 신뢰구간</h2>', unsafe_allow_html=True)
+    scope_note(True)
 
     try:
         from sklearn.metrics import r2_score, mean_absolute_error
@@ -2408,6 +2458,7 @@ elif page == "Bootstrap CI":
 elif page == "Nested CV":
     tile_open("light", anchor="nested-cv")
     st.markdown('<h2 class="h-section">Nested Cross-Validation</h2>', unsafe_allow_html=True)
+    scope_note(True)
 
     st.markdown('<div class="caption" style="margin-bottom:14px">'
                 'RandomForest의 max_depth를 내부 루프에서 튜닝하고, 외부 루프로 일반화 성능을 추정합니다. '
