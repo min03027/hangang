@@ -2018,15 +2018,18 @@ elif page == "신규 모델 (HSKR)":
                     cmp[_p] = hskr_vs_ml(B, pm, _FB["models_top"], _FP, _p)
         valid = [p for p in parks if cmp.get(p) and cmp[p].get("ml_r2") is not None]
         n_win = sum(1 for p in valid if cmp[p]["hskr_r2"] >= cmp[p]["ml_r2"])
+        deltas = [cmp[p]["hskr_r2"] - cmp[p]["ml_r2"] for p in valid]
+        med_gain = float(np.median(deltas)) if deltas else 0.0
 
         st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6">'
                     f'공원별로 직접 numpy 구현한 <b>HSKR</b>(계절 푸리에 + RBF 커널)을, 각 공원의 '
                     f'<b>최적 표준 ML 모델</b>과 <b>동일 시계열 holdout</b>(마지막 14개월)에서 비교했습니다. '
-                    f'<b style="color:var(--primary)">HSKR이 {n_win}/{len(valid)}개 공원에서 표준 ML보다 우수.</b> '
+                    f'<b style="color:var(--primary)">HSKR이 {n_win}/{len(valid)}개 공원에서 표준 ML보다 우수</b>, '
+                    f'공원별 R² 향상 중앙값 <b style="color:var(--primary)">{med_gain:+.2f}</b>. '
                     f'전 {len(parks)}개 공원 중 {n_pos}곳이 양수 R²(설명력 있음).</div>', unsafe_allow_html=True)
         g1, g2, g3 = st.columns(3, gap="medium")
         g1.markdown(metric_card(f"{n_win}/{len(valid)}", "HSKR 우세 공원 (vs 최적 ML)"), unsafe_allow_html=True)
-        g2.markdown(metric_card(f"{pr2:.3f}", "전체 R² (HSKR · 풀링)"), unsafe_allow_html=True)
+        g2.markdown(metric_card(f"{med_gain:+.2f}", "공원별 R² 향상 중앙값 (vs 최적 ML)"), unsafe_allow_html=True)
         g3.markdown(metric_card(f"{n_pos}/{len(parks)}", "양수 R² 공원 (HSKR)"), unsafe_allow_html=True)
 
         # ── 맨 위 전체 비교: 공원별 HSKR vs 최적 표준 ML
