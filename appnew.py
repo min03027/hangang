@@ -1126,13 +1126,30 @@ with st.sidebar:
     if "page" not in st.session_state:
         st.session_state["page"] = "개요"
     page = st.session_state["page"]
+    # 사이드바 네비 버튼 — 전역 파란 알약 대신 차분한 메뉴 스타일(현재 페이지만 옅은 음영 + 얇은 강조선)
+    st.markdown("""
+    <style>
+    [class*="st-key-navbtn"] button{
+      background:transparent!important;color:var(--ink)!important;border:1px solid transparent!important;
+      border-radius:10px!important;padding:8px 12px!important;font-size:14px!important;font-weight:500!important;
+      justify-content:flex-start!important;text-align:left!important;letter-spacing:-0.01em!important;
+      transition:background .12s ease!important;min-height:0!important;}
+    [class*="st-key-navbtn"] button:hover{background:rgba(0,0,0,0.045)!important;color:var(--ink)!important;filter:none!important;}
+    [class*="st-key-navbtn"] button:focus{outline:none!important;box-shadow:none!important;}
+    [class*="st-key-navbtn"] button p{font-size:14px!important;font-weight:500!important;}
+    [class*="st-key-navbtnON"] button{background:rgba(0,0,0,0.06)!important;color:var(--ink)!important;
+      font-weight:700!important;box-shadow:inset 2px 0 0 var(--primary)!important;}
+    [class*="st-key-navbtnON"] button p{font-weight:700!important;}
+    [class*="st-key-navbtnON"] button:hover{background:rgba(0,0,0,0.08)!important;}
+    </style>
+    """, unsafe_allow_html=True)
     st.markdown('<div class="caption" style="margin-bottom:2px">분석</div>', unsafe_allow_html=True)
     for _gname, _items in NAV_GROUPS:
         st.markdown(f'<div style="font-size:11px;font-weight:700;letter-spacing:.05em;'
                     f'color:var(--ink-48);margin:13px 0 5px 2px">{_gname}</div>', unsafe_allow_html=True)
         for _it in _items:
-            if st.button(NAV_KO.get(_it, _it), key=f"navbtn_{_it}", use_container_width=True,
-                         type=("primary" if _it == page else "secondary")):
+            _bkey = "navbtnON" if _it == page else f"navbtn_{_it}"
+            if st.button(NAV_KO.get(_it, _it), key=_bkey, use_container_width=True):
                 st.session_state["page"] = _it
                 st.rerun()
 
