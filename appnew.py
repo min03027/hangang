@@ -2458,6 +2458,8 @@ elif page == "Nested CV":
             fig = px.bar(cv_df, x="Fold", y="R²", text="선택 depth")
             fig.update_traces(marker_color=TOK["primary"], marker_line_width=0,
                               textposition="outside", textfont=dict(color=TOK["ink"]))
+            fig.update_layout(title="외부 fold별 R² (막대 위 = 내부 루프가 선택한 max_depth)",
+                              height=420, xaxis_title="외부 Fold", yaxis_title="R²")
             style_fig(fig)
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
         except Exception as e:
