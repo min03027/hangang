@@ -1130,17 +1130,17 @@ with st.sidebar:
     st.markdown("""
     <style>
     [class*="st-key-navbtn"] button{
-      background:transparent!important;color:var(--ink)!important;border:1px solid transparent!important;
+      background:rgba(0,0,0,0.06)!important;color:var(--ink)!important;border:1px solid rgba(0,0,0,0.08)!important;
       border-radius:10px!important;padding:8px 12px!important;font-size:14px!important;font-weight:500!important;
       justify-content:flex-start!important;text-align:left!important;letter-spacing:-0.01em!important;
       transition:background .12s ease!important;min-height:0!important;}
-    [class*="st-key-navbtn"] button:hover{background:rgba(0,0,0,0.045)!important;color:var(--ink)!important;filter:none!important;}
+    [class*="st-key-navbtn"] button p{font-size:14px!important;font-weight:500!important;color:var(--ink)!important;}
+    [class*="st-key-navbtn"] button:hover{background:rgba(0,0,0,0.11)!important;color:var(--ink)!important;filter:none!important;}
     [class*="st-key-navbtn"] button:focus{outline:none!important;box-shadow:none!important;}
-    [class*="st-key-navbtn"] button p{font-size:14px!important;font-weight:500!important;}
-    [class*="st-key-navbtnON"] button{background:rgba(0,0,0,0.06)!important;color:var(--ink)!important;
-      font-weight:700!important;box-shadow:inset 2px 0 0 var(--primary)!important;}
-    [class*="st-key-navbtnON"] button p{font-weight:700!important;}
-    [class*="st-key-navbtnON"] button:hover{background:rgba(0,0,0,0.08)!important;}
+    [class*="st-key-navbtnON"] button{background:var(--ink)!important;color:#fff!important;
+      border-color:var(--ink)!important;font-weight:700!important;}
+    [class*="st-key-navbtnON"] button p{color:#fff!important;font-weight:700!important;}
+    [class*="st-key-navbtnON"] button:hover{background:#000!important;color:#fff!important;}
     </style>
     """, unsafe_allow_html=True)
     st.markdown('<div class="caption" style="margin-bottom:2px">분석</div>', unsafe_allow_html=True)
