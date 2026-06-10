@@ -885,6 +885,7 @@ def vif_pooled_compare(_pm, thresh=10.0):
     excl = {"공원명", "연월", "월", "계절", "총이용객", "월sin", "월cos"}
     df = _pm.copy()
     cand = [c for c in df.columns if c not in excl and "일반이용자" not in c
+            and "일련번호" not in c and "일시" not in c        # ID·메타 컬럼 제외(누수 방지)
             and pd.api.types.is_numeric_dtype(df[c]) and df[c].astype(float).std() > 0]
     for c in cand:
         df[c] = df[c].fillna(0.0)
