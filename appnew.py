@@ -831,6 +831,42 @@ def get_park_pack(park):
             "lime_top": Dt["lime"]}
 
 
+@st.cache_data(show_spinner=False)
+def hskr_vs_ml(_B, _pm, _models_top, _fp_perpark, park):
+    """공원별: HSKR과 '동일 시계열 holdout'에서 표준 ML 최적모델을 평가해 공정 비교.
+    반환 dict(ml_name, ml_r2, ml_pred, hskr_r2) 또는 None."""
+    from sklearn.base import clone
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.metrics import r2_score
+    pp = _B["per_park"][park]
+    test_ym = [str(x)[:7] for x in pp["dates_test"]]
+    yte = np.asarray(pp["y_test"], float)
+    hskr_r2 = float(r2_score(yte, np.asarray(pp["hskr_pred_test"], float)))
+    sub = _pm[_pm["공원명"] == park].copy()
+    sub["ym"] = pd.to_datetime(sub["연월"]).dt.strftime("%Y-%m")
+    feats = [c for c in _fp_perpark["per_park"].get(park, {}).get("all_features", []) if c in sub.columns]
+    tr = sub[~sub["ym"].isin(test_ym)]
+    te = sub[sub["ym"].isin(test_ym)].set_index("ym").reindex(test_ym)
+    if not feats or len(tr) < 10 or te["총이용객"].isna().all():
+        return {"ml_name": None, "ml_r2": None, "ml_pred": None, "hskr_r2": hskr_r2}
+    ytr = tr["총이용객"].values.astype(float)
+    sc = StandardScaler().fit(tr[feats].astype(float).fillna(0).values)
+    Ztr = sc.transform(tr[feats].astype(float).fillna(0).values)
+    Zte = sc.transform(te[feats].astype(float).fillna(0).values)
+    best = None
+    for nm, est in _models_top.items():
+        try:
+            pred = clone(est).fit(Ztr, ytr).predict(Zte)
+            r = r2_score(yte, pred)
+            if best is None or r > best[1]:
+                best = (nm, float(r), np.asarray(pred, float))
+        except Exception:
+            pass
+    if best is None:
+        return {"ml_name": None, "ml_r2": None, "ml_pred": None, "hskr_r2": hskr_r2}
+    return {"ml_name": best[0], "ml_r2": best[1], "ml_pred": best[2], "hskr_r2": hskr_r2}
+
+
 def load_learning_curves():
     """사전 계산된 learning curve 결과 로드 (인앱 학습 없이 그리기 위함).
 
@@ -1971,25 +2007,48 @@ elif page == "신규 모델 (HSKR)":
         hk_all = np.concatenate([np.asarray(B["per_park"][p]["hskr_pred_test"], float) for p in parks])
         pr2, prmse = r2_score(yt_all, hk_all), mean_squared_error(yt_all, hk_all) ** 0.5
 
-        st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6">'
-                    f'공원별로 직접 numpy 구현한 <b>HSKR</b>(계절 푸리에 + RBF 커널)을 학습·튜닝했습니다 '
-                    f'(시계열 holdout, 마지막 14개월 테스트). 전 <b>{len(parks)}개</b> 공원 중 '
-                    f'<b>{n_pos}곳</b>에서 양수 R²(설명력 있음). 아래 전체값은 테스트 구간 풀링이라 '
-                    f'공원 간 스케일 차로 개별 R²와 다릅니다.</div>', unsafe_allow_html=True)
-        g1, g2, g3 = st.columns(3, gap="medium")
-        g1.markdown(metric_card(f"{pr2:.3f}", "전체 R² (HSKR · 풀링)"), unsafe_allow_html=True)
-        g2.markdown(metric_card(f"{prmse/1e4:.1f}만", "전체 RMSE (HSKR · 풀링)"), unsafe_allow_html=True)
-        g3.markdown(metric_card(f"{n_pos}/{len(parks)}", "양수 R² 공원"), unsafe_allow_html=True)
+        # ── HSKR vs 공원별 최적 표준 ML (동일 시계열 holdout에서 공정 비교)
+        _FB, _ = load_fi()
+        _FP, _ = load_fi_perpark()
+        cmp = {}
+        if _FB is not None and _FP is not None:
+            with st.spinner("표준 ML 최적모델을 동일 holdout에서 평가 중..."):
+                for _p in parks:
+                    cmp[_p] = hskr_vs_ml(B, pm, _FB["models_top"], _FP, _p)
+        valid = [p for p in parks if cmp.get(p) and cmp[p].get("ml_r2") is not None]
+        n_win = sum(1 for p in valid if cmp[p]["hskr_r2"] >= cmp[p]["ml_r2"])
 
-        st.markdown('<h2 class="h-section" style="margin-top:22px">공원별 HSKR R²</h2>', unsafe_allow_html=True)
+        st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6">'
+                    f'공원별로 직접 numpy 구현한 <b>HSKR</b>(계절 푸리에 + RBF 커널)을, 각 공원의 '
+                    f'<b>최적 표준 ML 모델</b>과 <b>동일 시계열 holdout</b>(마지막 14개월)에서 비교했습니다. '
+                    f'<b style="color:var(--primary)">HSKR이 {n_win}/{len(valid)}개 공원에서 표준 ML보다 우수.</b> '
+                    f'전 {len(parks)}개 공원 중 {n_pos}곳이 양수 R²(설명력 있음).</div>', unsafe_allow_html=True)
+        g1, g2, g3 = st.columns(3, gap="medium")
+        g1.markdown(metric_card(f"{n_win}/{len(valid)}", "HSKR 우세 공원 (vs 최적 ML)"), unsafe_allow_html=True)
+        g2.markdown(metric_card(f"{pr2:.3f}", "전체 R² (HSKR · 풀링)"), unsafe_allow_html=True)
+        g3.markdown(metric_card(f"{n_pos}/{len(parks)}", "양수 R² 공원 (HSKR)"), unsafe_allow_html=True)
+
+        # ── 맨 위 전체 비교: 공원별 HSKR vs 최적 표준 ML
+        st.markdown('<h2 class="h-section" style="margin-top:22px">공원별 — 새 모델(HSKR) vs 최적 표준 ML</h2>',
+                    unsafe_allow_html=True)
+        st.markdown('<div class="caption" style="margin-bottom:8px">동일 시계열 holdout R². '
+                    '<b style="color:var(--primary)">파랑 = HSKR</b> · <b style="color:#8e8e93">회색 = 최적 ML</b> '
+                    '(공원별 1등 표준모델).</div>', unsafe_allow_html=True)
         order_p = sorted(parks, key=lambda p: r2s[p])
-        colr = [TOK["primary"] if r2s[p] >= 0 else "#E8505B" for p in order_p]
-        fov = go.Figure(go.Bar(x=[r2s[p] for p in order_p], y=[p.replace("한강공원", "") for p in order_p],
-                               orientation="h", marker_color=colr,
-                               text=[f"{r2s[p]:+.2f}" for p in order_p], textposition="outside"))
+        ml_r2_of = lambda p: (cmp[p]["ml_r2"] if cmp.get(p) and cmp[p].get("ml_r2") is not None else None)
+        fov = go.Figure()
+        fov.add_trace(go.Bar(name="HSKR(새 모델)", y=[p.replace("한강공원", "") for p in order_p],
+                             x=[r2s[p] for p in order_p], orientation="h", marker_color=TOK["primary"],
+                             text=[f"{r2s[p]:+.2f}" for p in order_p], textposition="outside"))
+        fov.add_trace(go.Bar(name="최적 표준 ML", y=[p.replace("한강공원", "") for p in order_p],
+                             x=[ml_r2_of(p) if ml_r2_of(p) is not None else 0 for p in order_p],
+                             orientation="h", marker_color="#8e8e93",
+                             text=[f"{ml_r2_of(p):+.2f}" if ml_r2_of(p) is not None else "" for p in order_p],
+                             textposition="outside"))
         fov.add_vline(x=0, line=dict(color=TOK["ink"], dash="dot"))
-        fov.update_layout(title="공원별 HSKR R² (양수=설명력 있음, 빨강=음수)", height=420, xaxis_title="R²",
-                          margin=dict(l=10, r=60))
+        fov.update_layout(title="공원별 R² — HSKR vs 최적 표준 ML (높을수록 우수)", height=460,
+                          xaxis_title="R²", barmode="group", margin=dict(l=10, r=60),
+                          legend=dict(orientation="h", y=1.04))
         style_fig(fov)
         st.plotly_chart(fov, use_container_width=True, config={"displayModeBar": False})
 
@@ -2006,11 +2065,23 @@ elif page == "신규 모델 (HSKR)":
         cfg = pp.get("best_cfg", {})
         cfgtxt = (cfg.get("struct") if isinstance(cfg, dict) else str(cfg)) or "원본 HSKR"
 
-        # ── KPI
+        # ── KPI: 이 공원 — HSKR(새 모델) vs 최적 표준 ML
+        cm = cmp.get(cpark) or {}
+        ml_r2, ml_name, ml_pred = cm.get("ml_r2"), cm.get("ml_name"), cm.get("ml_pred")
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
+        if ml_r2 is not None:
+            _verd = "HSKR 우세" if cR2 >= ml_r2 else f"{ml_name} 우세"
+            st.markdown(f'<div class="caption" style="margin-bottom:6px">이 공원 — '
+                        f'<b style="color:var(--primary)">HSKR R² {cR2:+.3f}</b> vs 최적 ML('
+                        f'<b>{ml_name}</b>) R² {ml_r2:+.3f} → <b>{_verd}</b> (동일 시계열 holdout)</div>',
+                        unsafe_allow_html=True)
         k1, k2, k3 = st.columns(3, gap="medium")
-        k1.markdown(metric_card(f"{cR2:+.3f}", f"HSKR R² — {cpark.replace('한강공원','')}"), unsafe_allow_html=True)
-        k2.markdown(metric_card(f"{cRMSE/1e4:.1f}만", "HSKR RMSE"), unsafe_allow_html=True)
+        k1.markdown(metric_card(f"{cR2:+.3f}", "HSKR R² (새 모델)"), unsafe_allow_html=True)
+        if ml_r2 is not None:
+            k2.markdown(metric_card(f"{ml_r2:+.3f}", f"최적 ML R² ({ml_name})",
+                                    delta=f"HSKR {cR2-ml_r2:+.3f}"), unsafe_allow_html=True)
+        else:
+            k2.markdown(metric_card(f"{cRMSE/1e4:.1f}만", "HSKR RMSE"), unsafe_allow_html=True)
         k3.markdown(metric_card(cfgtxt, "공원별 선택 설정"), unsafe_allow_html=True)
 
         # ── 시계열 (실제 vs HSKR)
@@ -2022,8 +2093,11 @@ elif page == "신규 모델 (HSKR)":
                                      line=dict(color="rgba(140,140,150,0.30)", width=1.3)))
         fig.add_trace(go.Scatter(x=pp["dates_test"], y=pp["y_test"], name="실제", mode="lines+markers",
                                  line=dict(color=TOK["ink"], width=2), marker=dict(size=6)))
-        fig.add_trace(go.Scatter(x=pp["dates_test"], y=pp["hskr_pred_test"], name="HSKR",
+        fig.add_trace(go.Scatter(x=pp["dates_test"], y=pp["hskr_pred_test"], name="HSKR(새 모델)",
                                  mode="lines+markers", line=dict(color=TOK["primary"], width=3)))
+        if ml_pred is not None:
+            fig.add_trace(go.Scatter(x=pp["dates_test"], y=ml_pred, name=f"최적 ML({ml_name})",
+                                     mode="lines+markers", line=dict(color="#8e8e93", width=2, dash="dot")))
         fig.update_layout(title=f"{cpark} — 테스트 구간", height=430, hovermode="x unified", yaxis_title="총이용객")
         style_fig(fig)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
