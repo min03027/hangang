@@ -1935,10 +1935,10 @@ elif page == "모델 예측":
 
 elif page == "신규 모델 (HSKR)":
     tile_open("light", anchor="hskr")
-    st.markdown('<h2 class="h-display" style="color:var(--ink)">신규 HSKR vs 기존 ElasticNet</h2>',
+    st.markdown('<h2 class="h-display" style="color:var(--ink)">신규 HSKR — 공원별 직접 구현 모델</h2>',
                 unsafe_allow_html=True)
-    st.markdown('<p class="lead">직접 구현한 Hybrid Seasonal Kernel Ridge(계절 푸리에 + RBF 커널)와 '
-                '최고 표준 ML <b>ElasticNet</b>을 공원별로 비교합니다 — 전 11개 공원.</p>', unsafe_allow_html=True)
+    st.markdown('<p class="lead">직접 numpy로 구현한 Hybrid Seasonal Kernel Ridge(계절 푸리에 + RBF 커널)를 '
+                '공원별로 학습·튜닝한 결과입니다 — 전 11개 공원.</p>', unsafe_allow_html=True)
     tile_close()
 
     B, hskr_err = load_hskr()
@@ -1957,41 +1957,39 @@ elif page == "신규 모델 (HSKR)":
         </div>
         """, unsafe_allow_html=True)
     else:
-        from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+        from sklearn.metrics import r2_score, mean_squared_error
         parks = list(B["parks"])
-        core = [p for p in ("망원한강공원", "이촌한강공원", "잠실한강공원") if p in parks]
-        _m0 = B["per_park"][parks[0]]["metrics"]
-        bn = "ElasticNet" if "ElasticNet" in _m0 else ("Ridge" if "Ridge" in _m0 else B["best_base_name"])
 
-        def _red(p):
-            mm = B["per_park"][p]["metrics"]
-            return (mm[bn]["RMSE"] - mm["HSKR"]["RMSE"]) / mm[bn]["RMSE"] * 100 if mm[bn]["RMSE"] else 0.0
+        def _hm(p):
+            yt = np.asarray(B["per_park"][p]["y_test"], float)
+            hp = np.asarray(B["per_park"][p]["hskr_pred_test"], float)
+            return float(r2_score(yt, hp)), float(mean_squared_error(yt, hp) ** 0.5)
 
-        # ── 헤드라인: 전 11개 공원 전체(풀링) 성능
+        r2s = {p: _hm(p)[0] for p in parks}
+        n_pos = sum(1 for p in parks if r2s[p] > 0)
         yt_all = np.concatenate([np.asarray(B["per_park"][p]["y_test"], float) for p in parks])
         hk_all = np.concatenate([np.asarray(B["per_park"][p]["hskr_pred_test"], float) for p in parks])
-        rg_all = np.concatenate([np.asarray(B["per_park"][p]["base_pred_test"][bn], float) for p in parks])
-        hk_r2, hk_rmse = r2_score(yt_all, hk_all), mean_squared_error(yt_all, hk_all) ** 0.5
-        rg_r2, rg_rmse = r2_score(yt_all, rg_all), mean_squared_error(yt_all, rg_all) ** 0.5
-        ov_red = (rg_rmse - hk_rmse) / rg_rmse * 100 if rg_rmse else 0.0
-        n_win = sum(1 for p in parks if _red(p) > 0)
+        pr2, prmse = r2_score(yt_all, hk_all), mean_squared_error(yt_all, hk_all) ** 0.5
 
-        st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6">HSKR(계절+커널)을 '
-                    f'<b>전 {len(parks)}개 공원</b>에 공원별로 학습해 기존 <b>{bn}</b>과 비교합니다. '
-                    f'평가지표는 <b>R²</b>와 <b>RMSE</b>. HSKR이 <b>{n_win}/{len(parks)}개 공원</b>에서 '
-                    f'{bn} 대비 RMSE를 낮췄습니다. 아래 전체값은 테스트 구간 풀링이라 '
-                    f'공원 간 스케일 차(수만~수백만)로 R²가 낮게 나옵니다(공원별 R²는 아래 상세 참고).</div>',
-                    unsafe_allow_html=True)
+        st.markdown(f'<div class="caption" style="margin-bottom:8px;line-height:1.6">'
+                    f'공원별로 직접 numpy 구현한 <b>HSKR</b>(계절 푸리에 + RBF 커널)을 학습·튜닝했습니다 '
+                    f'(시계열 holdout, 마지막 14개월 테스트). 전 <b>{len(parks)}개</b> 공원 중 '
+                    f'<b>{n_pos}곳</b>에서 양수 R²(설명력 있음). 아래 전체값은 테스트 구간 풀링이라 '
+                    f'공원 간 스케일 차로 개별 R²와 다릅니다.</div>', unsafe_allow_html=True)
         g1, g2, g3 = st.columns(3, gap="medium")
-        g1.markdown(metric_card(f"{hk_r2:.3f}", "전체 R² (HSKR)", delta=f"+{bn} {rg_r2:.3f}"), unsafe_allow_html=True)
-        g2.markdown(metric_card(f"{hk_rmse/1e4:.1f}만", "전체 RMSE (HSKR)",
-                                delta=f"+{bn} {rg_rmse/1e4:.1f}만"), unsafe_allow_html=True)
-        g3.markdown(metric_card(f"+{ov_red:.1f}%", "RMSE 감소율", delta=f"+vs {bn}"), unsafe_allow_html=True)
-        fov = go.Figure(go.Bar(x=[hk_rmse / 1e4, rg_rmse / 1e4], y=["HSKR", f"{bn}(기존)"], orientation="h",
-                               marker_color=[TOK["primary"], "#E8505B"],
-                               text=[f"{hk_rmse/1e4:.1f}만", f"{rg_rmse/1e4:.1f}만"], textposition="outside"))
-        fov.update_layout(title=f"{len(parks)}개 공원 전체 RMSE (낮을수록 우수)", height=240, xaxis_title="RMSE(만)",
-                          yaxis=dict(autorange="reversed"))
+        g1.markdown(metric_card(f"{pr2:.3f}", "전체 R² (HSKR · 풀링)"), unsafe_allow_html=True)
+        g2.markdown(metric_card(f"{prmse/1e4:.1f}만", "전체 RMSE (HSKR · 풀링)"), unsafe_allow_html=True)
+        g3.markdown(metric_card(f"{n_pos}/{len(parks)}", "양수 R² 공원"), unsafe_allow_html=True)
+
+        st.markdown('<h2 class="h-section" style="margin-top:22px">공원별 HSKR R²</h2>', unsafe_allow_html=True)
+        order_p = sorted(parks, key=lambda p: r2s[p])
+        colr = [TOK["primary"] if r2s[p] >= 0 else "#E8505B" for p in order_p]
+        fov = go.Figure(go.Bar(x=[r2s[p] for p in order_p], y=[p.replace("한강공원", "") for p in order_p],
+                               orientation="h", marker_color=colr,
+                               text=[f"{r2s[p]:+.2f}" for p in order_p], textposition="outside"))
+        fov.add_vline(x=0, line=dict(color=TOK["ink"], dash="dot"))
+        fov.update_layout(title="공원별 HSKR R² (양수=설명력 있음, 빨강=음수)", height=420, xaxis_title="R²",
+                          margin=dict(l=10, r=60))
         style_fig(fov)
         st.plotly_chart(fov, use_container_width=True, config={"displayModeBar": False})
 
@@ -2000,26 +1998,23 @@ elif page == "신규 모델 (HSKR)":
         st.markdown('<h2 class="h-section">공원별 상세</h2>', unsafe_allow_html=True)
 
         # 공원 선택 (상세)
-        d_idx = parks.index(selected_park) if selected_park in parks else (parks.index(core[0]) if core else 0)
+        d_idx = parks.index(selected_park) if selected_park in parks else 0
         cpark = st.selectbox("공원 (전 11개 공원)", parks, index=d_idx)
         scope_note(False, cpark)
         pp = B["per_park"][cpark]
-        met = pp["metrics"]
-        red = _red(cpark)
-        order = ["HSKR", bn]
-        colors = [TOK["primary"], "#E8505B"]
+        cR2, cRMSE = _hm(cpark)
+        cfg = pp.get("best_cfg", {})
+        cfgtxt = (cfg.get("struct") if isinstance(cfg, dict) else str(cfg)) or "원본 HSKR"
 
         # ── KPI
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
         k1, k2, k3 = st.columns(3, gap="medium")
-        k1.markdown(metric_card(f"+{red:.1f}%", "RMSE 감소율", delta=f"+vs {bn}"), unsafe_allow_html=True)
-        k2.markdown(metric_card(f"{met['HSKR']['R2']:.3f}", "HSKR R²",
-                                delta=f"+기존 {met[bn]['R2']:.3f}"), unsafe_allow_html=True)
-        k3.markdown(metric_card(f"{met['HSKR']['RMSE']/1e4:.1f}만", "HSKR RMSE",
-                                delta=f"+기존 {met[bn]['RMSE']/1e4:.1f}만"), unsafe_allow_html=True)
+        k1.markdown(metric_card(f"{cR2:+.3f}", f"HSKR R² — {cpark.replace('한강공원','')}"), unsafe_allow_html=True)
+        k2.markdown(metric_card(f"{cRMSE/1e4:.1f}만", "HSKR RMSE"), unsafe_allow_html=True)
+        k3.markdown(metric_card(cfgtxt, "공원별 선택 설정"), unsafe_allow_html=True)
 
-        # ── 시계열 (실제 vs HSKR vs 최고 기존)
-        st.markdown('<h2 class="h-section" style="margin-top:24px">실제 vs 예측 (테스트 구간)</h2>',
+        # ── 시계열 (실제 vs HSKR)
+        st.markdown('<h2 class="h-section" style="margin-top:24px">실제 vs HSKR 예측 (테스트 구간)</h2>',
                     unsafe_allow_html=True)
         fig = go.Figure()
         if "dates_all" in pp and "y_all" in pp:
@@ -2027,74 +2022,28 @@ elif page == "신규 모델 (HSKR)":
                                      line=dict(color="rgba(140,140,150,0.30)", width=1.3)))
         fig.add_trace(go.Scatter(x=pp["dates_test"], y=pp["y_test"], name="실제", mode="lines+markers",
                                  line=dict(color=TOK["ink"], width=2), marker=dict(size=6)))
-        fig.add_trace(go.Scatter(x=pp["dates_test"], y=pp["base_pred_test"][bn], name=f"기존({bn})",
-                                 mode="lines+markers", line=dict(color="#E8505B", width=2, dash="dot")))
         fig.add_trace(go.Scatter(x=pp["dates_test"], y=pp["hskr_pred_test"], name="HSKR",
                                  mode="lines+markers", line=dict(color=TOK["primary"], width=3)))
         fig.update_layout(title=f"{cpark} — 테스트 구간", height=430, hovermode="x unified", yaxis_title="총이용객")
         style_fig(fig)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-        # ── 모델 비교 (RMSE / R²)
-        st.markdown(f'<h2 class="h-section" style="margin-top:20px">모델 비교 (HSKR vs {bn})</h2>',
-                    unsafe_allow_html=True)
-        ca, cb = st.columns(2, gap="medium")
-        with ca:
-            fr = go.Figure(go.Bar(x=[met[m]["RMSE"] / 1e4 for m in order], y=order, orientation="h",
-                                  marker_color=colors, text=[f"{met[m]['RMSE']/1e4:.1f}" for m in order],
-                                  textposition="outside"))
-            fr.update_layout(title="RMSE (낮을수록 우수)", height=340, xaxis_title="RMSE(만)",
-                             yaxis=dict(autorange="reversed"))
-            style_fig(fr)
-            st.plotly_chart(fr, use_container_width=True, config={"displayModeBar": False})
-        with cb:
-            fR = go.Figure(go.Bar(x=[met[m]["R2"] for m in order], y=order, orientation="h",
-                                  marker_color=colors, text=[f"{met[m]['R2']:.3f}" for m in order],
-                                  textposition="outside"))
-            fR.update_layout(title="R² (높을수록 우수)", height=340, xaxis_title="R²",
-                             yaxis=dict(autorange="reversed"))
-            style_fig(fR)
-            st.plotly_chart(fR, use_container_width=True, config={"displayModeBar": False})
+        # ── 실제 vs HSKR 산점도
+        yt, yp = np.asarray(pp["y_test"], float), np.asarray(pp["hskr_pred_test"], float)
+        lim = [float(min(yt.min(), yp.min())), float(max(yt.max(), yp.max()))]
+        fsc = go.Figure()
+        fsc.add_trace(go.Scatter(x=yt, y=yp, mode="markers",
+                                 marker=dict(color=TOK["primary"], size=9, opacity=0.75), name="HSKR"))
+        fsc.add_trace(go.Scatter(x=lim, y=lim, mode="lines",
+                                 line=dict(color=TOK["ink"], dash="dot"), showlegend=False))
+        fsc.update_layout(title="실제 vs HSKR 예측 (점선 = 완벽 예측)", height=380,
+                          xaxis_title="실제", yaxis_title="예측")
+        style_fig(fsc)
+        st.plotly_chart(fsc, use_container_width=True, config={"displayModeBar": False})
 
-        # ── 실제 vs HSKR 산점도 + 공원별 향상률
-        cc, cd = st.columns(2, gap="medium")
-        with cc:
-            yt, yp = np.asarray(pp["y_test"], float), np.asarray(pp["hskr_pred_test"], float)
-            lim = [float(min(yt.min(), yp.min())), float(max(yt.max(), yp.max()))]
-            fsc = go.Figure()
-            fsc.add_trace(go.Scatter(x=yt, y=yp, mode="markers",
-                                     marker=dict(color=TOK["primary"], size=9, opacity=0.75), name="HSKR"))
-            fsc.add_trace(go.Scatter(x=lim, y=lim, mode="lines",
-                                     line=dict(color=TOK["ink"], dash="dot"), showlegend=False))
-            fsc.update_layout(title="실제 vs HSKR 예측", height=380,
-                              xaxis_title="실제", yaxis_title="예측")
-            style_fig(fsc)
-            st.plotly_chart(fsc, use_container_width=True, config={"displayModeBar": False})
-        with cd:
-            reds = sorted(((p, _red(p)) for p in parks), key=lambda x: x[1])
-            barc = ["#E8505B" if p in core else TOK["primary"] for p, _ in reds]
-            fp = go.Figure(go.Bar(x=[v for _, v in reds], y=[p.replace("한강공원", "") for p, _ in reds],
-                                  orientation="h", marker_color=barc,
-                                  text=[f"{v:+.0f}%" for _, v in reds], textposition="outside"))
-            fp.add_vline(x=0, line=dict(color=TOK["ink"], dash="dot"))
-            fp.update_layout(title=f"공원별 RMSE 감소율 vs {bn} (빨강=핵심3)", height=380, xaxis_title="감소율 %")
-            style_fig(fp)
-            st.plotly_chart(fp, use_container_width=True, config={"displayModeBar": False})
-
-        # ── 지표 표 + 요약
-        st.markdown('<h2 class="h-section" style="margin-top:12px">성능 지표 표</h2>', unsafe_allow_html=True)
-        mdf = pd.DataFrame([{"모델": m, "R²": round(met[m]["R2"], 3),
-                             "RMSE(만)": round(met[m]["RMSE"] / 1e4, 1)} for m in order])
-        st.dataframe(mdf, use_container_width=True, hide_index=True)
-        if core:
-            avg_red = float(np.mean([_red(p) for p in core]))
-            st.markdown(f'<div class="caption" style="margin-top:8px">핵심 3개 공원'
-                        f'({" · ".join(p.replace("한강공원","") for p in core)}) 평균 RMSE 감소율 '
-                        f'<b style="color:var(--primary)">+{avg_red:.1f}%</b> (HSKR vs {bn}).</div>',
-                        unsafe_allow_html=True)
-        st.caption(f"※ 전 11개 공원을 공원별로 학습(시계열 holdout). 대형·구조변화 공원(뚝섬·여의도 등)은 "
-                   f"예측이 어려워 R²가 음수일 수 있으나 HSKR이 {bn} 대비 RMSE를 줄입니다. "
-                   f"{bn}은 동일 테스트 구간의 기존 베이스라인.")
+        st.caption("※ 전 11개 공원을 공원별로 직접 구현한 HSKR로 학습(시계열 holdout, 마지막 14개월 테스트). "
+                   "공원마다 최적 설정(하모닉·커널 가중·로그타깃 등)을 따로 튜닝. 소형·이벤트성 공원(강서 등)은 "
+                   "표본·신호가 적어 음수 R²가 날 수 있습니다.")
     tile_close()
 
 
