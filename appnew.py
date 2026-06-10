@@ -2056,6 +2056,23 @@ elif page == "신규 모델 (HSKR)":
         style_fig(fov)
         st.plotly_chart(fov, use_container_width=True, config={"displayModeBar": False})
 
+        # ── 공원별 비교 표 (HSKR vs 최적 ML · Δ 향상)
+        if valid:
+            tbl = pd.DataFrame([{
+                "공원": p.replace("한강공원", ""),
+                "HSKR R²": round(cmp[p]["hskr_r2"], 3),
+                "최적 ML": cmp[p]["ml_name"],
+                "ML R²": round(cmp[p]["ml_r2"], 3),
+                "Δ 향상(HSKR−ML)": round(cmp[p]["hskr_r2"] - cmp[p]["ml_r2"], 3),
+            } for p in valid]).sort_values("Δ 향상(HSKR−ML)", ascending=False).reset_index(drop=True)
+            _mean = float(np.mean(deltas)); _med = float(np.median(deltas))
+            st.dataframe(tbl, use_container_width=True, hide_index=True)
+            st.download_button("⬇️ HSKR vs ML 비교표 CSV", tbl.to_csv(index=False).encode("utf-8-sig"),
+                               "hskr_vs_ml.csv", "text/csv")
+            st.caption(f"※ 동일 시계열 holdout R². Δ 향상 = HSKR − 최적 ML. "
+                       f"공원별 향상 중앙값 {_med:+.2f} · 평균 {_mean:+.2f}(강서 이상치 영향). "
+                       f"HSKR 우세 {n_win}/{len(valid)}곳.")
+
         st.markdown('<hr style="border:none;border-top:1px solid var(--hairline);margin:22px 0 6px 0">',
                     unsafe_allow_html=True)
         st.markdown('<h2 class="h-section">공원별 상세</h2>', unsafe_allow_html=True)
