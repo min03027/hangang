@@ -2603,9 +2603,25 @@ elif page == "Conformal":
         lower, upper = pred - q, pred + q
         coverage = float(np.mean((y_tst >= lower) & (y_tst <= upper))) * 100
 
+        # 대표 예측(전체 평균) 기준 예측구간 — α(구간폭)에 따라 변동
+        center = float(np.mean(pred))
+        lo, hi = max(0.0, center - q), center + q
+        cov_pct = int(round((1 - alpha) * 100))
+
         c1, c2 = st.columns([1, 3], gap="medium")
-        c1.markdown(metric_card(f"{coverage:.1f}%", "실측 커버리지", delta=f"+목표 {(1-alpha)*100:.0f}%"),
-                    unsafe_allow_html=True)
+        with c1:
+            st.markdown(metric_card(f"{coverage:.1f}%", "실측 커버리지", delta=f"+목표 {cov_pct}%"),
+                        unsafe_allow_html=True)
+            st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
+            st.markdown(metric_card(f"{lo/1e4:,.1f}만", f"최저 ({cov_pct}% 구간 하한)"),
+                        unsafe_allow_html=True)
+            st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
+            st.markdown(metric_card(f"{hi/1e4:,.1f}만", f"최고 ({cov_pct}% 구간 상한)"),
+                        unsafe_allow_html=True)
+            st.markdown(f'<div class="caption" style="margin-top:8px;line-height:1.6">대표 예측 '
+                        f'<b>{center/1e4:,.1f}만</b> 기준 — <b>{cov_pct}% 확률</b>로 방문객이 '
+                        f'<b style="color:var(--primary)">{lo/1e4:,.1f}만 ~ {hi/1e4:,.1f}만</b> 명 사이. '
+                        f'(α 슬라이더로 구간 변동)</div>', unsafe_allow_html=True)
 
         with c2:
             order = np.argsort(y_tst)
