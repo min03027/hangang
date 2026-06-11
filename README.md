@@ -28,6 +28,6 @@ streamlit run appnew.py
 - `data/users.csv`: 서울시 한강공원 월별 이용객 현황 (2018-01 ~ 2024-02)
 - `data/trend.xlsx`: 네이버 트렌드 검색량 (11개 공원 + 한강공원 통합)
 - `model/fi_models.pkl`: 표준 ML 분석 번들 (하이퍼파라미터·VIF 피처)
-- `model/fi_perpark.pkl`: 공원별 비교1·비교2 사전계산 번들 — `build_fi_perpark.py`로 생성
+- `model/fi_perpark.pkl`: 공원별 비교1·비교2 사전계산 번들 (오프라인 생성)
 - `model/hskr_model.pkl`: 공원별 HSKR 결과 번들
 - `hskr_model.py`: HSKR 모델 클래스 (pkl 언피클에 필요)
