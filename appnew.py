@@ -1719,6 +1719,20 @@ elif page == "EDA":
             st.markdown(f'<div class="caption">표본 {len(monthly)}개 · '
                         f'X(VIF 변수) <b>{len(Xcols)}개</b> · Y(시간대) <b>{len(Ycols)}개</b></div>',
                         unsafe_allow_html=True)
+
+            # ── 유의한 조합: 각 변수 vs 총이용객 (Pearson·Spearman·Kendall)
+            sig = corr_df[corr_df["Pearson_p"] < 0.05].drop(columns=["유의"], errors="ignore").copy()
+            sig.insert(1, "Y_피처", "총이용객")
+            st.markdown(f'<h3 class="h-section" style="margin-top:10px">유의한 조합: {len(sig)}개</h3>',
+                        unsafe_allow_html=True)
+            st.markdown('<div class="caption" style="margin-bottom:6px">각 변수와 <b>총이용객</b>의 상관 '
+                        '— Pearson·Spearman·Kendall (p&lt;0.05 유의 변수만, Pearson_r 내림차순).</div>',
+                        unsafe_allow_html=True)
+            st.dataframe(sig, use_container_width=True, hide_index=True)
+            st.download_button("⬇️ 유의 상관표 CSV", sig.to_csv(index=False).encode("utf-8-sig"),
+                               "cca_significant_corr.csv", "text/csv")
+            st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
+
             if len(Xcols) > len(monthly) // 7:
                 st.markdown(f'<div class="caption" style="color:#E8505B">⚠️ X({len(Xcols)})가 표본 대비 '
                             f'많은 편(권장 ≤{len(monthly)//7}) — 1번째 정준상관이 다소 높게 나올 수 있습니다.</div>',
